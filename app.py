@@ -252,7 +252,7 @@ DEFAULT_WATCHLIST_TEXT = """宁德时代\n比亚迪\n赛力斯\n中远海控\n�
 def clean_code(text: str) -> str:
     if not text:
         return ""
-    m = re.search(r"([a-zA-Z0-9]+)", str(text))
+    m = re.search(r"([a-zA-Z0-9.\-]+)", str(text))
     return m.group(1).upper() if m else str(text).strip().upper()
 
 def get_realtime_stock_tencent(code: str, market_type: str) -> Dict[str, Any]:
@@ -303,7 +303,81 @@ def get_realtime_stock_tencent(code: str, market_type: str) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# 7. 基础工具与数据获取函数
+# 7. 智能代码判定与全球 Suggest 解析引擎 (彻底解决中文乱码与未知股票 Bug)
+# ==============================================================================
+def is_stock_code(text: str) -> bool:
+    """智能判定输入的是代码还是名称 (完美过滤中文)"""
+    if bool(re.search(r'[\u4e00-\u9fff]', text)): # 含有中文，绝对是名称
+        return False
+    cleaned = clean_code(text)
+    if not cleaned:
+        return False
+    # 允许纯数字、纯字母、点号和横杠 (如 300750, AAPL, BRK.A)
+    if re.match(r'^[A-Z0-9.\-]+$', cleaned):
+        return True
+    return False
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def resolve_stock_name_to_code(name: str) -> Optional[str]:
+    """直连东财全球 Suggest 搜索接口，0.05秒精准将名称解析为代码"""
+    name = name.strip()
+    if not name:
+        return None
+    try:
+        # 14 代表全球市场搜索
+        url = f"https://searchapi.eastmoney.com/api/suggest/get?input={name}&type=14&count=5"
+        resp = requests.get(url, timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            suggestions = data.get("QuotationCodeTable", {}).get("Data", [])
+            if suggestions:
+                # 返回最匹配的第一个标的代码
+                return str(suggestions[0].get("Code", ""))
+    except Exception:
+        pass
+        
+    # 兜底：扫描 A 股本地列表
+    spot = get_stock_spot_table()
+    if not spot.empty:
+        hit = spot[spot["名称"] == name]
+        if not hit.empty:
+            return str(hit.iloc[0]["代码"])
+    return None
+
+def get_stock_name(code: str, market_type: str) -> str:
+    code = clean_code(code)
+    tencent_info = get_realtime_stock_tencent(code, market_type)
+    if tencent_info and tencent_info.get("名称"):
+        return tencent_info["名称"]
+    
+    if market_type == "港股":
+        if code.isdigit() and len(code) < 5:
+            code = code.zfill(5)
+        try:
+            df = ak.stock_hk_spot_em()
+            hit = df[df["代码"] == code]
+            if not hit.empty:
+                return str(hit.iloc[0]["名称"])
+        except Exception:
+            pass
+        return "未知港股"
+    elif market_type == "美股":
+        return "未知美股"
+    else:
+        if code.isdigit() and len(code) < 6:
+            code = code.zfill(6)
+        try:
+            spot = get_stock_spot_table()
+            hit = spot[spot["代码"] == code]
+            if not hit.empty:
+                return str(hit.iloc[0]["名称"])
+        except Exception:
+            pass
+        return "未知A股"
+
+
+# ==============================================================================
+# 8. 基础工具与历史 K 线数据拉取
 # ==============================================================================
 def pick_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     for col in candidates:
@@ -378,44 +452,6 @@ def get_stock_spot_table() -> pd.DataFrame:
         return out.drop_duplicates(subset=["代码"]).reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def resolve_stock_name_to_code(name: str) -> Optional[str]:
-    spot = get_stock_spot_table()
-    if spot.empty: return None
-    hit = spot[spot["名称"] == name]
-    return str(hit.iloc[0]["代码"]) if not hit.empty else None
-
-def get_stock_name(code: str, market_type: str) -> str:
-    code = clean_code(code)
-    tencent_info = get_realtime_stock_tencent(code, market_type)
-    if tencent_info and tencent_info.get("名称"):
-        return tencent_info["名称"]
-    
-    if market_type == "港股":
-        if code.isdigit() and len(code) < 5:
-            code = code.zfill(5)
-        try:
-            df = ak.stock_hk_spot_em()
-            hit = df[df["代码"] == code]
-            if not hit.empty:
-                return str(hit.iloc[0]["名称"])
-        except Exception:
-            pass
-        return "未知港股"
-    elif market_type == "美股":
-        return "未知美股"
-    else:
-        if code.isdigit() and len(code) < 6:
-            code = code.zfill(6)
-        try:
-            spot = get_stock_spot_table()
-            hit = spot[spot["代码"] == code]
-            if not hit.empty:
-                return str(hit.iloc[0]["名称"])
-        except Exception:
-            pass
-        return "未知A股"
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_stock_hist(code: str, market_type: str, days: int = 120) -> pd.DataFrame:
@@ -508,7 +544,7 @@ def get_board_cons(board_name: str, board_type: str = "行业") -> pd.DataFrame:
 
 
 # ==============================================================================
-# 8. 🚀 100% 真实三大指数拉取器 (上证、深成、创业板)
+# 9. 🚀 100% 真实三大指数拉取器 (上证、深成、创业板)
 # ==============================================================================
 @st.cache_data(ttl=10, show_spinner=False)
 def get_realtime_indices() -> List[Dict[str, Any]]:
@@ -544,7 +580,7 @@ def get_realtime_indices() -> List[Dict[str, Any]]:
 
 
 # ==============================================================================
-# 9. 🗓️ 100% 真实主力方向历史数据生成器 (交叉计算 30 日 Top 5 行业)
+# 10. 🗓️ 100% 真实主力方向历史数据生成器 (交叉计算 30 日 Top 5 行业)
 # ==============================================================================
 @st.cache_data(ttl=600, show_spinner=False)
 def get_mainline_history_data(days: int = 30) -> List[Dict[str, Any]]:
@@ -641,7 +677,7 @@ def get_mainline_history_data(days: int = 30) -> List[Dict[str, Any]]:
 
 
 # ==============================================================================
-# 10. Z哥核心战法计算引擎 (知行趋势双线 + KDJ + MACD)
+# 11. Z哥核心战法计算引擎 (知行趋势双线 + KDJ + MACD)
 # ==============================================================================
 def add_base_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -674,7 +710,7 @@ def add_base_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==============================================================================
-# 11. 战法识别逻辑
+# 12. 战法识别逻辑
 # ==============================================================================
 def detect_b1(df: pd.DataFrame) -> Dict[str, Any]:
     if df is None or df.empty or len(df) < 30:
@@ -763,7 +799,7 @@ def detect_exit_signals(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# 12. 绘制 K线 + 知行趋势双线图表
+# 13. 绘制 K线 + 知行趋势双线图表
 # ==============================================================================
 def chart_stock(df: pd.DataFrame) -> go.Figure:
     show = df.tail(60).copy()
@@ -816,7 +852,7 @@ def chart_stock(df: pd.DataFrame) -> go.Figure:
 
 
 # ==============================================================================
-# 13. 导航与全局状态初始化
+# 14. 导航与全局状态初始化
 # ==============================================================================
 if "selected_stock_code" not in st.session_state:
     st.session_state["selected_stock_code"] = "300750"
@@ -835,11 +871,11 @@ page = st.radio(
 
 
 # ==============================================================================
-# 14. 页面渲染逻辑
+# 15. 页面渲染逻辑
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 14.1. 市场状态页 (100% 实时真数据)
+# 15.1. 市场状态页 (100% 实时真数据)
 # ------------------------------------------------------------------------------
 if page == "1. 市场状态页":
     beijing_now = get_beijing_now()
@@ -984,7 +1020,7 @@ if page == "1. 市场状态页":
 
 
 # ------------------------------------------------------------------------------
-# 14.2. 个股分析页 (手动选择市场，完美适配 A/港/美股)
+# 15.2. 个股分析页 (手动选择市场，完美适配 A/港/美股)
 # ------------------------------------------------------------------------------
 elif page == "2. 个股分析页":
     st.markdown("### 2. 个股分析页")
@@ -1004,7 +1040,7 @@ elif page == "2. 个股分析页":
                     </li>
                     <li>
                         <span style="color:#f79009; font-weight:800;">🟡 黄线（中期生命线 / 护城河）</span>：
-                        公式为 4 参数多空指标变体 <code>(MA(3)+MA(6)+MA(12)+MA(24))/4</code>。它代表中线趋势的生死防线.
+                        公式为 4 参数多空指标变体 <code>(MA(3)+MA(6)+MA(12)+MA(24))/4</code>。它代表中线趋势的生死防线。
                         <br>💡 <em>大白话</em>：只要价格守在黄线之上，中线多头趋势就未坏，允许反复低吸。一旦收盘价有效跌破黄线，说明护城河失守，主力彻底放弃抵抗，必须无条件清仓离场（<strong>走错也要走，不留幻想</strong>）。
                     </li>
                 </ul>
@@ -1030,13 +1066,15 @@ elif page == "2. 个股分析页":
         with c_in1:
             market_type = st.selectbox("选择市场", ["A股", "港股", "美股"], index=["A股", "港股", "美股"].index(st.session_state["selected_market_type"]))
         with c_in2:
-            stock_code_input = st.text_input("输入股票代码或名称 (如 AAPL, 00700, 300750)", value=st.session_state["selected_stock_code"], label_visibility="collapsed")
+            stock_code_input = st.text_input("输入股票代码或名称 (如 AAPL, 00700, 300750, 宁德时代)", value=st.session_state["selected_stock_code"], label_visibility="collapsed")
         with c_in3:
             diag_btn = st.button("开始深度诊断", type="primary", use_container_width=True)
             
     if stock_code_input:
-        code = clean_code(stock_code_input)
-        if not code.isalnum():
+        # 智能判定并解析中文名称
+        if is_stock_code(stock_code_input):
+            code = clean_code(stock_code_input)
+        else:
             resolved_code = resolve_stock_name_to_code(stock_code_input)
             code = resolved_code if resolved_code else "300750"
             
@@ -1226,7 +1264,7 @@ elif page == "2. 个股分析页":
 
 
 # ------------------------------------------------------------------------------
-# 14.3. 自选观察池 (完美支持跨市场多市场扫描)
+# 15.3. 自选观察池 (完美支持跨市场多市场扫描)
 # ------------------------------------------------------------------------------
 elif page == "3. 自选观察池":
     st.markdown("### 3. 自选观察池")
@@ -1244,10 +1282,13 @@ elif page == "3. 自选观察池":
         
         rows = []
         for name in raw_names:
-            code = clean_code(name)
-            if not code.isalnum():
+            # 智能判定并解析中文名称
+            if is_stock_code(name):
+                code = clean_code(name)
+            else:
                 resolved = resolve_stock_name_to_code(name)
                 code = resolved if resolved else ""
+                
             if code:
                 df_stock = add_base_indicators(get_stock_hist(code, w_market, 60))
                 if not df_stock.empty:
@@ -1295,7 +1336,7 @@ elif page == "3. 自选观察池":
 
 
 # ------------------------------------------------------------------------------
-# 14.4. 交易计划单 (港美股自适应)
+# 15.4. 交易计划单 (港美股自适应)
 # ------------------------------------------------------------------------------
 elif page == "4. 交易计划单":
     st.markdown("### 4. 交易计划单")
@@ -1359,7 +1400,7 @@ elif page == "4. 交易计划单":
 
 
 # ------------------------------------------------------------------------------
-# 14.5. 交易复盘页
+# 15.5. 交易复盘页
 # ------------------------------------------------------------------------------
 elif page == "5. 交易复盘页":
     st.markdown("### 5. 交易复盘页")

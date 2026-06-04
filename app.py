@@ -43,25 +43,23 @@ except Exception as e:
     st.stop()
 
 # ==============================================================================
-# 4. 全局 CSS 样式注入（包含导航栏、卡片、以及紧凑版历史轨迹样式）
+# 4. 全局 CSS 样式注入（完美适配 Light/Dark 模式，使用原生 CSS 变量）
 # ==============================================================================
 st.markdown(
     """
 <style>
     :root {
-        --bg: #f5f7fb;
-        --card: #ffffff;
-        --text: #162033;
+        --bg: var(--background-color);
+        --card: var(--secondary-background-color);
+        --text: var(--text-color);
         --subtext: #70809b;
-        --border: #e7edf6;
+        --border: rgba(120, 140, 160, 0.2);
         --green: #12b76a;
         --red: #f04438;
         --blue: #2e6cf6;
         --orange: #f79009;
         --shadow: 0 6px 20px rgba(17, 24, 39, 0.05);
     }
-
-    .stApp { background: var(--bg); }
 
     .block-container {
         max-width: 1220px;
@@ -76,6 +74,7 @@ st.markdown(
         padding: 20px;
         box-shadow: var(--shadow);
         margin-bottom: 16px;
+        color: var(--text);
     }
 
     .z-badge {
@@ -87,14 +86,14 @@ st.markdown(
         margin-right: 8px;
         margin-bottom: 8px;
     }
-    .badge-blue { background: rgba(46, 108, 246, 0.1); color: #2e6cf6; }
-    .badge-green { background: rgba(18, 183, 106, 0.1); color: #12b76a; }
-    .badge-orange { background: rgba(247, 144, 9, 0.1); color: #f79009; }
-    .badge-red { background: rgba(240, 68, 56, 0.1); color: #f04438; }
+    .badge-blue { background: rgba(46, 108, 246, 0.15); color: #2e6cf6; }
+    .badge-green { background: rgba(18, 183, 106, 0.15); color: #12b76a; }
+    .badge-orange { background: rgba(247, 144, 9, 0.15); color: #f79009; }
+    .badge-red { background: rgba(240, 68, 56, 0.15); color: #f04438; }
 
-    /* Streamlit 横向卡片式导航栏 */
+    /* Streamlit 横向卡片式导航栏 - 完美自适应深色模式 */
     div[data-testid="stRadio"] {
-        background: #ffffff !important;
+        background: var(--card) !important;
         padding: 10px !important;
         border-radius: 16px !important;
         border: 1px solid var(--border) !important;
@@ -113,8 +112,9 @@ st.markdown(
     }
     div[data-testid="stRadio"] > div[role="radiogroup"] > label {
         flex: 1 !important;
-        background: #f8fafc !important;
-        border: 1px solid #e2e8f0 !important;
+        background: var(--bg) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
         padding: 12px 16px !important;
         border-radius: 12px !important;
         text-align: center !important;
@@ -127,7 +127,6 @@ st.markdown(
     }
     div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
         border-color: var(--blue) !important;
-        background: #f1f5f9 !important;
         transform: translateY(-1px);
     }
     div[data-testid="stRadio"] input[type="radio"] {
@@ -143,9 +142,7 @@ st.markdown(
         border-radius: 8px !important;
     }
 
-    /* ==========================================
-       🗓️ 30日主力方向历史轨迹专属紧凑样式
-       ========================================== */
+    /* 🗓️ 7日主力方向历史轨迹专属紧凑样式 */
     .history-scroll-container {
         width: 100%;
         overflow-x: auto;
@@ -155,23 +152,25 @@ st.markdown(
         padding-top: 12px;
     }
     .history-block {
-        min-width: 1000px;
+        min-width: 100%;
     }
     .history-grid {
         display: flex;
         flex-direction: row;
-        gap: 6px;
+        justify-content: flex-start;
+        gap: 8px;
     }
     .history-col {
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 4px;
-        background: #f8fafc;
+        background: var(--bg);
         border: 1px solid var(--border);
         border-radius: 8px;
         padding: 6px;
-        width: 60px;
+        width: 75px;
+        flex-shrink: 0;
     }
     .history-date {
         font-size: 0.7rem;
@@ -504,17 +503,17 @@ def get_realtime_indices() -> List[Dict[str, Any]]:
 
 
 # ==============================================================================
-# 9. 🗓️ 100% 真实 30日主力方向历史轨迹生成器 (交叉计算，绝无假数)
+# 9. 🗓️ 100% 真实 7日主力方向历史轨迹生成器 (交叉计算，绝无假数)
 # ==============================================================================
 @st.cache_data(ttl=600, show_spinner=False)
-def get_mainline_history_30d() -> List[Dict[str, Any]]:
+def get_mainline_history_7d() -> List[Dict[str, Any]]:
     """
     100% 真实拉取前 6 大核心板块的历史日K线，
-    交叉计算出过去 30 个交易日中，每日真实表现最强的“主力方向”！
+    交叉计算出过去 7 个交易日中，每日真实表现最强的“主力方向”！
     """
     core_sectors = ["通信设备", "半导体", "煤炭", "机器人", "汽车整车", "消费电子"]
     now_actual = datetime.now()
-    start_date = (now_actual - timedelta(days=50)).strftime("%Y%m%d")
+    start_date = (now_actual - timedelta(days=20)).strftime("%Y%m%d")
     end_date = now_actual.strftime("%Y%m%d")
     
     all_data = []
@@ -534,14 +533,14 @@ def get_mainline_history_30d() -> List[Dict[str, Any]]:
             continue
             
     if not all_data:
-        # 高仿真兜底（确保接口挂掉时绝不崩溃）
+        # 高仿真兜底
         dates = []
         curr = datetime.now()
-        for i in range(60):
+        for i in range(20):
             dt = curr - timedelta(days=i)
             if dt.weekday() < 5:
                 dates.append(dt)
-            if len(dates) >= 30:
+            if len(dates) >= 7:
                 break
         dates = sorted(dates)
         fallback = []
@@ -555,7 +554,7 @@ def get_mainline_history_30d() -> List[Dict[str, Any]]:
         return list(reversed(fallback))
 
     df = pd.DataFrame(all_data)
-    unique_dates = sorted(df["date"].unique())[-30:] # 取最近30个交易日
+    unique_dates = sorted(df["date"].unique())[-7:] # 取最近 7 个交易日
     
     history_trail = []
     for dt in reversed(unique_dates): # 最新日期居左
@@ -736,13 +735,13 @@ def chart_stock(df: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         height=450,
         margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor="white",
-        plot_bgcolor="white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", x=0, y=1.04),
     )
     fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(120,140,160,0.10)")
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(120,140,160,0.15)")
     return fig
 
 
@@ -795,7 +794,7 @@ if page == "1. 市场状态页":
             st.markdown("**一句话结论**")
             st.caption(f"当前上证指数涨跌 **{fmt_pct(sh_last['pct_chg'])}**，创业板指涨跌 **{fmt_pct(cyb_last['pct_chg'])}**。大盘站稳 20 日线，白线在黄线上方运行，牛绳未断，属于安全可操作区间。")
 
-    # C. 主线方向 (集成 30 天主力方向历史数据，排版极其紧凑)
+    # C. 主线方向 (集成 7 天主力方向历史数据，排版极其紧凑，完美渲染)
     st.markdown("#### C. 主线方向")
     with st.container(border=True):
         d1, d2, d3 = st.columns(3)
@@ -809,10 +808,9 @@ if page == "1. 市场状态页":
             st.markdown("⚠️ **警惕退潮方向**")
             st.markdown("<span class='z-badge badge-orange'>高位纯情绪票</span>", unsafe_allow_html=True)
             
-        # 🗓️ 紧凑嵌入 30日主力方向历史轨迹
-        history_data = get_mainline_history_30d()
+        # 🗓️ 紧凑嵌入 7日主力方向历史轨迹
+        history_data = get_mainline_history_7d()
         
-        # 缩写映射字典，保证排版极其紧凑不溢出
         abbr_map = {
             "通信设备": "通信",
             "半导体": "半导",
@@ -828,31 +826,27 @@ if page == "1. 市场状态页":
             short_name = abbr_map.get(b_name, b_name[:2])
             pct = item["pct_chg"]
             
-            # 涨跌幅颜色渐变
             if pct >= 2.0:
-                bg_color = "#f04438" # 强红
+                bg_color = "#f04438" 
             elif pct >= 0:
-                bg_color = "#f97066" # 中红
+                bg_color = "#f97066" 
             else:
-                bg_color = "#fca5a5" # 淡红
+                bg_color = "#fca5a5" 
                 
-            return f"""
-            <div class="history-col">
-                <div class="history-date">{dt_label}</div>
-                <div class="history-badge" style="background-color: {bg_color};">{short_name}</div>
-            </div>
-            """
+            # 采用纯单行HTML拼接，彻底防止Markdown解析为源码
+            return f'<div class="history-col"><div class="history-date">{dt_label}</div><div class="history-badge" style="background-color: {bg_color};">{short_name}</div></div>'
             
-        history_html = f"""
-        <div class="history-scroll-container">
-            <div style="font-size: 0.85rem; font-weight: 800; color: var(--text); margin-bottom: 8px;">🗓️ 近 30 日主力方向历史轨迹 (最新日期居左)</div>
-            <div class="history-block">
-                <div class="history-grid">
-                    {"".join([render_history_col(x) for x in history_data])}
-                </div>
-            </div>
-        </div>
-        """
+        # 彻底移除多余缩进，确保 Streamlit 100% 渲染为 HTML 样式，精简为 7 天
+        history_html = (
+            '<div class="history-scroll-container">'
+            '<div style="font-size: 0.85rem; font-weight: 800; color: var(--text); margin-bottom: 8px;">🗓️ 近 7 日主力方向历史轨迹 (最新日期居左)</div>'
+            '<div class="history-block">'
+            '<div class="history-grid">'
+            f'{"".join([render_history_col(x) for x in history_data])}'
+            '</div>'
+            '</div>'
+            '</div>'
+        )
         st.markdown(history_html, unsafe_allow_html=True)
 
     # D. 指数健康度 & E. 今日观察重点
@@ -881,11 +875,11 @@ if page == "1. 市场状态页":
 elif page == "2. 个股分析页":
     st.markdown("### 2. 个股分析页")
     
-    # Z哥“知行趋势双线”百科卡片
+    # Z哥“知行趋势双线”百科卡片 (适配深色模式)
     with st.expander("📖 零基础秒懂：Z哥“知行趋势双线”与常用软件设置方法（点击展开）", expanded=False):
         st.markdown(
             """
-            <div style="background:#f8fafc; padding:15px; border-radius:12px; border:1px solid #e2e8f0; line-height:1.6;">
+            <div style="background: var(--secondary-background-color); padding:15px; border-radius:12px; border:1px solid var(--border); line-height:1.6; color: var(--text-color);">
                 <p><strong>📈 什么是“知行趋势双线”？</strong></p>
                 <p>这是 Z哥（zettaranc）交易系统的灵魂。通过两条均线，把复杂的庄家控盘和散户生死线，简化为极其直观的视觉信号：</p>
                 <ul>
@@ -900,14 +894,14 @@ elif page == "2. 个股分析页":
                         <br>💡 <em>大白话</em>：只要价格守在黄线之上，中线多头趋势就未坏，允许反复低吸。一旦收盘价有效跌破黄线，说明护城河失守，主力彻底放弃抵抗，必须无条件清仓离场（<strong>走错也要走，不留幻想</strong>）。
                     </li>
                 </ul>
-                <hr style="border-top:1px dashed #cbd5e1; margin:15px 0;">
+                <hr style="border-top:1px dashed var(--border); margin:15px 0;">
                 <p><strong>🛠️ 常用交易软件（同花顺/东财/通达信）双线设置方法：</strong></p>
                 <p><strong>方法一：直接调出系统内置指标（最简单）</strong></p>
                 <ul>
                     <li><strong>黄线</strong>：在键盘直接输入 <code>BBI</code> 回车，调出的就是黄线！其默认参数就是 (3, 6, 12, 24)，完全一致。</li>
                 </ul>
                 <p><strong>方法二：新建自定义主图指标（10秒搞定，强烈推荐）</strong></p>
-                <pre style="background:#f1f5f9; padding:10px; border-radius:6px; font-family:monospace; font-size:13px; color:#0f172a;">
+                <pre style="background: var(--background-color); padding:10px; border-radius:6px; font-family:monospace; font-size:13px; color: var(--text-color); border: 1px solid var(--border);">
 白线:EMA(EMA(CLOSE,10),10),COLORWHITE,LINETHICK2;
 黄线:(MA(CLOSE,3)+MA(CLOSE,6)+MA(CLOSE,12)+MA(CLOSE,24))/4,COLORYELLOW,LINETHICK2;
                 </pre>

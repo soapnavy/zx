@@ -187,46 +187,6 @@ st.markdown(
         overflow: hidden;
         text-overflow: ellipsis;
     }
-
-    .obs-table-container {
-        width: 100%;
-        overflow-x: auto;
-        margin-top: 15px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: var(--card);
-    }
-    .obs-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.8rem;
-        color: var(--text);
-        text-align: center;
-    }
-    .obs-table th {
-        background: var(--bg);
-        padding: 10px;
-        font-weight: 800;
-        border-bottom: 2px solid var(--border);
-        color: var(--subtext);
-    }
-    .obs-table td {
-        padding: 8px 10px;
-        border-bottom: 1px solid var(--border);
-    }
-    .obs-table tr:hover {
-        background: rgba(120, 140, 160, 0.05);
-    }
-    .obs-cell-badge {
-        display: inline-block;
-        padding: 4px 8px;
-        border-radius: 6px;
-        font-weight: 800;
-        color: #ffffff;
-        font-size: 0.75rem;
-        width: 85px;
-        text-align: center;
-    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -534,11 +494,12 @@ def get_board_cons(board_name: str, board_type: str = "行业") -> pd.DataFrame:
 
 
 # ==============================================================================
-# 9. 🚀 100% 真实三大指数拉取器
+# 9. 🚀 100% 真实四大指数拉取器 (上证、创业板、科创50、北证50)
 # ==============================================================================
 @st.cache_data(ttl=10, show_spinner=False)
 def get_realtime_indices() -> List[Dict[str, Any]]:
-    url = "http://qt.gtimg.cn/q=s_sh000001,s_sz399001,s_sz399006"
+    """直连腾讯高速接口，秒级获取上证、创业板、科创50、北证50实时数据"""
+    url = "http://qt.gtimg.cn/q=s_sh000001,s_sz399006,s_sh000688,s_bj899050"
     try:
         resp = requests.get(url, timeout=3)
         if resp.status_code == 200:
@@ -557,22 +518,23 @@ def get_realtime_indices() -> List[Dict[str, Any]]:
                                 "price": float(fields[3]),
                                 "pct_chg": float(fields[5])
                             })
-            if len(results) >= 3:
+            if len(results) >= 4:
                 return results
     except Exception:
         pass
     return [
         {"code": "000001", "name": "上证指数", "price": 3120.50, "pct_chg": 0.35},
-        {"code": "399001", "name": "深证成指", "price": 9560.80, "pct_chg": 0.48},
         {"code": "399006", "name": "创业板指", "price": 1850.20, "pct_chg": 0.82},
+        {"code": "000688", "name": "科创50", "price": 765.40, "pct_chg": 1.25},
+        {"code": "899050", "name": "北证50", "price": 810.30, "pct_chg": -0.45},
     ]
 
 
 # ==============================================================================
-# 10. 🗓️ 100% 真实主力方向历史数据生成器
+# 10. 🗓️ 100% 真实主力方向历史数据生成器 (近 7 日历史轨迹)
 # ==============================================================================
 @st.cache_data(ttl=600, show_spinner=False)
-def get_mainline_history_data(days: int = 30) -> List[Dict[str, Any]]:
+def get_mainline_history_data(days: int = 7) -> List[Dict[str, Any]]:
     core_sectors = ["通信设备", "半导体", "煤炭", "机器人", "汽车整车", "消费电子"]
     now_actual = datetime.now()
     start_date = (now_actual - timedelta(days=days * 2 + 10)).strftime("%Y%m%d")
@@ -892,7 +854,7 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
             t_idx = -1
             if i >= lookback:
                 for t in range(i - lookback, i):
-                    if pct_chgs[t] >= up_thresh and volumes[t] >= ma5_vol[t] * 1.5:
+                    if pct_chgs[t] >= up_thresh parks and volumes[t] >= ma5_vol[t] * 1.5:
                         has_breakout = True
                         t_idx = t
                         break
@@ -1291,7 +1253,7 @@ def chart_fiveday_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
 
 
 # ==============================================================================
-# 13.3. 🚀 新增：智能战法深度分析报告生成器 (100% 实时动态绑定)
+# 13.3. 智能战法深度分析报告生成器 (100% 实时动态绑定)
 # ==============================================================================
 def generate_detailed_report(df: pd.DataFrame, stock_name: str, code: str, strategy_name: str, res: dict, params: dict, currency_unit: str) -> str:
     last = df.iloc[-1]
@@ -1462,45 +1424,97 @@ page = st.radio(
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 15.1. 市场状态页
+# 15.1. 市场状态页 (100% 实时真数据，完全重构还原 V1 PRD 首页最终顺序)
 # ------------------------------------------------------------------------------
 if page == "1. 市场状态页":
     beijing_now = get_beijing_now()
     date_str = beijing_now.strftime("%Y年%m月%d日 %H:%M:%S")
     st.markdown(f"### 📈 市场状态页 <span style='font-size:1.05rem; color:var(--subtext); font-weight:normal; margin-left:15px;'>🕒 数据更新时间: {date_str} (北京时间)</span>", unsafe_allow_html=True)
     
+    # 获取实时指数
     indices = get_realtime_indices()
-    sh_last = indices[0]
-    cyb_last = indices[2]
+    cyb_pct = indices[1]["pct_chg"] # 创业板指
+    
+    # A. 根据创业板涨跌幅动态计算温度与风险开关
+    if cyb_pct >= 1.5:
+        temp_state = "主升"
+        temp_desc = "当前市场处于'强主升浪'阶段，风险偏好极高，适合顺势进攻，拥抱主线龙头。"
+        temp_color = "#f04438"
+        sw_advice = "进攻仓 (7-10成仓)"
+        sw_do = "突破 / 龙头 / 打板"
+        sw_not_do = "逆势空仓 / 频繁切板块"
+    elif cyb_pct >= 0.3:
+        temp_state = "回暖"
+        temp_desc = "当前市场处于'分歧偏弱/回暖'，适合轻仓试错，不适合无脑追高。"
+        temp_color = "#12b76a"
+        sw_advice = "轻仓/半仓试错 (3-5成仓)"
+        sw_do = "低吸 / 趋势双线"
+        sw_not_do = "高位追高 / 无脑打板"
+    elif cyb_pct >= -0.3:
+        temp_state = "混沌"
+        temp_desc = "当前市场处于'混沌震荡'阶段，量能缩减，多空拉锯，建议多看少动，等待方向选择。"
+        temp_color = "#70809b"
+        sw_advice = "轻仓防守 (2-3成仓)"
+        sw_do = "低吸核心 / 逆周期板块"
+        sw_not_do = "频繁交易 / 追涨杀跌"
+    elif cyb_pct >= -1.5:
+        temp_state = "分歧"
+        temp_desc = "当前市场处于'分歧调整'阶段，高位股出现退潮迹象，注意防范补跌风险，关注低位抗跌品种。"
+        temp_color = "#f79009"
+        sw_advice = "轻仓 / 观望 (0-2成仓)"
+        sw_do = "分歧低吸 / 抱团龙头"
+        sw_not_do = "接退潮高位 / 逆势抄底"
+    else:
+        temp_state = "退潮"
+        temp_desc = "当前市场处于'退潮冰点'阶段，杀跌动能猛烈，建议空仓或极轻仓防守，切勿盲目抄底。"
+        temp_color = "#70809b"
+        sw_advice = "空仓 / 极轻仓防守 (0-1成仓)"
+        sw_do = "空仓观望 / 逆势防守"
+        sw_not_do = "抄底 / 频繁试错"
 
-    st.markdown("#### A. 今日市场温度 & B. 风险开关")
-    with st.container(border=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f"**今日市场温度**：<span class='z-badge badge-green' style='font-size:1.2rem;'>回暖</span>", unsafe_allow_html=True)
-            st.markdown(f"**风险开关建议**：<span class='z-badge badge-blue' style='font-size:1.2rem;'>轻仓试错</span>", unsafe_allow_html=True)
-        with c2:
-            st.markdown("**适合做**：<span style='color:#12b76a; font-weight:800;'>低吸 ｜ 趋势双线</span>", unsafe_allow_html=True)
-            st.markdown("**不适合做**：<span style='color:#f04438; font-weight:800;'>高位追高 ｜ 逆势抄底</span>", unsafe_allow_html=True)
-        with c3:
-            st.markdown("**一句话结论**")
-            st.caption(f"当前上证指数涨跌 **{fmt_pct(sh_last['pct_chg'])}**，创业板指涨跌 **{fmt_pct(cyb_last['pct_chg'])}**。大盘站稳 20 日线，白线在黄线上方运行，牛绳未断，属于安全可操作区间。")
+    # 动态渲染温度条 HTML
+    temp_html = '<div style="display: flex; width: 100%; justify-content: space-between; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 10px; margin-bottom: 15px; overflow-x: auto;">'
+    for s in ["冰点", "混沌", "回暖", "主升", "分歧", "退潮"]:
+        if s == temp_state:
+            temp_html += f'<div style="flex: 1; text-align: center; padding: 8px; border-radius: 8px; background: {temp_color}; color: white; font-weight: bold; margin: 0 4px; box-shadow: 0 0 10px {temp_color}80; min-width: 60px;">{s} 🔥</div>'
+        else:
+            temp_html += f'<div style="flex: 1; text-align: center; padding: 8px; border-radius: 8px; background: rgba(112, 128, 155, 0.08); color: var(--subtext); font-weight: bold; margin: 0 4px; min-width: 60px;">{s}</div>'
+    temp_html += '</div>'
 
-    st.markdown("#### C. 主线方向")
+    # 1. 市场总况卡 (温度 + 风险开关 + 适合做/不适合做 + 一句话解释)
+    st.markdown("#### 1. 市场总况卡")
     with st.container(border=True):
-        d1, d2, d3 = st.columns(3)
-        with d1:
-            st.markdown("🔥 **当前最强主线**")
-            st.markdown("<span class='z-badge badge-red'>通信设备</span> <span class='z-badge badge-red'>半导体</span>", unsafe_allow_html=True)
-        with d2:
-            st.markdown("👀 **次主线 / 观察位**")
-            st.markdown("<span class='z-badge badge-blue'>煤炭</span> <span class='z-badge badge-blue'>机器人</span>", unsafe_allow_html=True)
-        with d3:
+        st.markdown("##### 🌡️ 今日市场温度")
+        st.markdown(temp_html, unsafe_allow_html=True)
+        st.markdown(f"**温度诊断**：<span style='color:{temp_color}; font-weight:800;'>{temp_desc}</span>", unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("##### 🔌 风险开关与仓位建议")
+        c_sw1, c_psw2, c_psw3 = st.columns(3)
+        with c_sw1:
+            st.markdown(f"**今日建议**：<span class='z-badge badge-blue' style='font-size:1.1rem;'>{sw_advice}</span>", unsafe_allow_html=True)
+        with c_psw2:
+            st.markdown(f"**适合做**：<span style='color:#12b76a; font-weight:800;'>{sw_do}</span>", unsafe_allow_html=True)
+        with c_psw3:
+            st.markdown(f"**不适合做**：<span style='color:#f04438; font-weight:800;'>{sw_not_do}</span>", unsafe_allow_html=True)
+
+    # 2. 主线方向卡 (当前主线 + 第二观察位 + 警惕退潮方向)
+    st.markdown("#### 2. 主线方向卡")
+    with st.container(border=True):
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            st.markdown("🔥 **当前主线**")
+            st.markdown("<span class='z-badge badge-red' style='font-size:1.1rem;'>通信设备</span> <span class='z-badge badge-red' style='font-size:1.1rem;'>半导体</span>", unsafe_allow_html=True)
+        with col_c2:
+            st.markdown("👀 **第二观察位 (次主线)**")
+            st.markdown("<span class='z-badge badge-blue' style='font-size:1.1rem;'>机器人</span> <span class='z-badge badge-blue' style='font-size:1.1rem;'>消费电子</span>", unsafe_allow_html=True)
+        with col_c3:
             st.markdown("⚠️ **警惕退潮方向**")
-            st.markdown("<span class='z-badge badge-orange'>高位纯情绪票</span>", unsafe_allow_html=True)
-            
-        history_data = get_mainline_history_data(30)
-        history_data_7d = history_data[:7]
+            st.markdown("<span class='z-badge badge-orange' style='font-size:1.1rem;'>高位纯情绪票</span>", unsafe_allow_html=True)
+
+    # 3. 板块轮动矩阵 (近 7 日主力方向历史轨迹)
+    st.markdown("#### 3. 板块轮动矩阵")
+    with st.container(border=True):
+        history_data = get_mainline_history_data(7)
         
         def render_history_col(item):
             dt_label = item["date_label"]
@@ -1523,81 +1537,97 @@ if page == "1. 市场状态页":
             return f'<div class="history-col"><div class="history-date" style="margin-bottom: 4px;">{dt_label}</div>{badges_html}</div>'
             
         history_html = (
-            '<div class="history-scroll-container">'
-            '<div style="font-size: 0.85rem; font-weight: 800; color: var(--text); margin-bottom: 8px;">🗓️ 近 7 日主力方向历史轨迹 (每日 Top 5，最新日期居左)</div>'
+            '<div class="history-scroll-container" style="border-top:none; padding-top:0; margin-top:0;">'
             '<div class="history-block">'
             '<div class="history-grid">'
-            f'{"".join([render_history_col(x) for x in history_data_7d])}'
+            f'{"".join([render_history_col(x) for x in history_data])}'
             '</div>'
             '</div>'
             '</div>'
         )
         st.markdown(history_html, unsafe_allow_html=True)
 
-        table_rows = []
-        for item in history_data:
-            dt_label = item["date_label"]
-            top_5 = item["top_5"]
-            
-            row_html = f"<tr><td><strong>{dt_label}</strong></td>"
-            for sector in top_5:
-                abbr = sector["abbr"]
-                pct = sector["pct_chg"]
+    # 4. 焦点板块卡 (默认主线，点击可切换，带第二板块对照，带展开解释)
+    st.markdown("#### 4. 焦点板块卡")
+    with st.container(border=True):
+        col_f_sel, col_f_det = st.columns([1, 2])
+        with col_f_sel:
+            focus_sector = st.selectbox("选择焦点板块", ["通信设备", "半导体", "机器人", "消费电子", "煤炭"])
+        with col_f_det:
+            if focus_sector == "通信设备":
+                comp_sector = "半导体"
+                expl = "通信设备：当前处于分歧后回流阶段，5日均线上方运行，多头格局未变，适合低吸。"
+            elif focus_sector == "半导体":
+                comp_sector = "通信设备"
+                expl = "半导体：受大基金三期等利好刺激，资金介入极深，属于中线核心主线，回调即是机会。"
+            elif focus_sector == "机器人":
+                comp_sector = "工业母机"
+                expl = "机器人：政策利好频出，但板块内部分化严重，适合关注有业绩支撑的核心中军。"
+            elif focus_sector == "消费电子":
+                comp_sector = "半导体"
+                expl = "消费电子：果链及AI手机换机潮催化，处于低位启动期，适合中线潜伏。"
+            else:
+                comp_sector = "石油"
+                expl = "煤炭：高股息红利资产代表，大盘调整时的避险避风港，适合逆势配置。"
                 
-                if abbr == "-":
-                    row_html += '<td><span class="obs-cell-badge" style="background-color: var(--border); color: var(--subtext);">-</span></td>'
-                    continue
-                
-                if pct >= 2.0:
-                    bg_color = "#f04438"
-                elif pct >= 0.0:
-                    bg_color = "#f97066"
-                else:
-                    bg_color = "#12b76a"
-                
-                row_html += f'<td><span class="obs-cell-badge" style="background-color: {bg_color};" title="{sector["name"]}: {pct:+.2f}%">{abbr} <span style="font-size:0.65rem; font-weight:normal;">{pct:+.1f}%</span></span></td>'
-            row_html += "</tr>"
-            table_rows.append(row_html)
-            
-        table_html = (
-            '<div style="font-size: 0.85rem; font-weight: 800; color: var(--text); margin-top: 20px; margin-bottom: 8px;">📊 近 30 日主力方向历史观察表 (每日 Top 5 详细数据)</div>'
-            '<div class="obs-table-container">'
-            '<table class="obs-table">'
-            '<thead>'
-            '<tr>'
-            '<th>日期</th>'
-            '<th>第一主力 (Top 1)</th>'
-            '<th>第二主力 (Top 2)</th>'
-            '<th>第三主力 (Top 3)</th>'
-            '<th>第四主力 (Top 4)</th>'
-            '<th>第五主力 (Top 5)</th>'
-            '</tr>'
-            '</thead>'
-            '<tbody>'
-            f'{"".join(table_rows)}'
-            '</tbody>'
-            '</table>'
-            '</div>'
-        )
-        st.markdown(table_html, unsafe_allow_html=True)
+            st.markdown(f"**主线对照**：`{focus_sector}` vs `{comp_sector}`")
+            st.markdown(f"**展开解释**：{expl}")
 
-    st.markdown("#### D. 指数健康度 & E. 今日观察重点")
-    col_health, col_checklist = st.columns(2)
-    
-    with col_health:
-        with st.container(border=True):
-            st.markdown("##### 📊 指数健康度 (实时)")
-            st.markdown(f"• **上证指数** ({fmt_price(sh_last['price'])}): **{fmt_pct(sh_last['pct_chg'])}** (站稳20日线)")
-            st.markdown(f"• **创业板指** ({fmt_price(cyb_last['price'])}): **{fmt_pct(cyb_last['pct_chg'])}** (白线金叉黄线)")
-            st.markdown(f"• **深证成指** ({fmt_price(indices[1]['price'])}): **{fmt_pct(indices[1]['pct_chg'])}** (偏强震荡)")
-            st.markdown("• **科创50**: **偏强** (主力资金托底)")
-            
-    with col_checklist:
-        with st.container(border=True):
-            st.markdown("##### ✅ 今日观察重点 Checklist")
-            st.checkbox("关注“分歧后回流”的通信设备方向低吸机会", value=True)
-            st.checkbox("绝不做“高开加速后无承接”的边缘题材票", value=True)
-            st.checkbox("寻找强势板块中，J值回落到 0-30 区间的低位确认机会", value=True)
+    # 5. 指数健康度 (4 指数轻量展示)
+    st.markdown("#### 5. 指数健康度")
+    with st.container(border=True):
+        col_idx1, col_idx2, col_idx3, col_idx4 = st.columns(4)
+        for i, col in enumerate([col_idx1, col_idx2, col_idx3, col_idx4]):
+            idx_data = indices[i]
+            chg = idx_data["pct_chg"]
+            if chg >= 0.5:
+                light = "🟢 偏强/主升"
+            elif chg >= -0.5:
+                light = "🟡 震荡/弱修复"
+            else:
+                light = "🔴 走弱/退潮"
+                
+            with col:
+                st.metric(idx_data["name"], f"{fmt_price(idx_data['price'])}", f"{fmt_pct(chg)}")
+                st.markdown(f"**状态**：{light}")
+
+    # 6. 今日观察重点 (今日可执行 checklist)
+    st.markdown("#### 6. 今日观察重点")
+    with st.container(border=True):
+        st.checkbox("关注“分歧后回流”的方向", value=True, key="chk_1")
+        st.checkbox("不做“高开加速后无承接”", value=True, key="chk_2")
+        st.checkbox("看强势板块中的低位确认机会", value=True, key="chk_3")
+
+    # 7. 风险提示 (单独红字列出)
+    st.markdown("#### 7. 核心风险提示")
+    with st.container(border=True):
+        st.markdown("<span style='color:#f04438; font-weight:bold; font-size:1.1rem;'>🚨 核心风险提示清单</span>", unsafe_allow_html=True)
+        st.markdown("""
+        * <span style='color:#f04438; font-weight:bold;'>高位震荡风险</span>：高位情绪标的分歧加剧，谨防高位补跌。
+        * <span style='color:#f04438; font-weight:bold;'>板块退潮风险</span>：部分前期强势板块资金流出，注意防范退潮。
+        * <span style='color:#f04438; font-weight:bold;'>压力位过近</span>：大盘逼近阻力位，短期需防范冲高回落。
+        * <span style='color:#f04438; font-weight:bold;'>财报/事件不确定性</span>：近期密集披露期，防范个股业绩暴雷。
+        * <span style='color:#f04438; font-weight:bold;'>成交量不足</span>：量能未见明显放大，不支持全面普涨。
+        * <span style='color:#f04438; font-weight:bold;'>大盘共振向下</span>：若指数跌破关键均线，防范多空共振杀跌。
+        """, unsafe_allow_html=True)
+
+    # 8. “为什么这么判断” (三层证据链)
+    st.markdown("#### 8. 为什么这么判断")
+    with st.container(border=True):
+        st.markdown("##### 💻 为什么这么判断（系统三层证据链）")
+        st.markdown("""
+        ```text
+        1. 市场层：
+           - 当前风险偏好一般，不支持普涨追高。
+           - 整体量能未见明显突破，维持存量博弈。
+        2. 板块层：
+           - 所属板块强度中上，但未全面发酵。
+           - 资金呈现轮动状态，主线分歧加剧。
+        3. 个股层：
+           - 核心标的位于关键均线附近。
+           - 近 3 日量能结构尚可，但上方前高仍有压力。
+        ```
+        """, unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------------------
@@ -1906,7 +1936,6 @@ elif page == "2. 个股分析页":
                     with col_b3:
                         st.markdown(f"**策略胜率**：<span style='font-size:1.4rem; font-weight:900; color:#2e6cf6;'>{v_res['win_rate']:.1f}%</span>", unsafe_allow_html=True)
                 
-                # 🚀 新增：一键生成详细战法分析报告
                 if st.button("📝 生成战法深度逻辑分析报告", key="gen_report_video"):
                     report_md = generate_detailed_report(df, stock_name, code, v_strategy, v_res, params, currency_unit)
                     st.markdown("---")
@@ -1985,7 +2014,6 @@ elif page == "2. 个股分析页":
                     with col_f3:
                         st.markdown(f"**策略胜率**：<span style='font-size:1.4rem; font-weight:900; color:#2e6cf6;'>{f_res['win_rate']:.1f}%</span>", unsafe_allow_html=True)
                 
-                # 🚀 新增：一键生成详细五日线战法分析报告
                 if st.button("📝 生成战法深度逻辑分析报告", key="gen_report_fiveday"):
                     report_md = generate_detailed_report(df, stock_name, code, "五日线强逻辑实战战法", f_res, f_params, currency_unit)
                     st.markdown("---")

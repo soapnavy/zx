@@ -852,6 +852,287 @@ def chart_stock(df: pd.DataFrame) -> go.Figure:
 
 
 # ==============================================================================
+# 13.1. 视频专属战法回测与信号绘制引擎 (少妇战法、TePu战法、补票战法)
+# ==============================================================================
+def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) -> Dict[str, Any]:
+    """
+    运行视频专属策略历史回测，生成交易买卖点及各项量化数据
+    """
+    d = df.copy()
+    signals = [] # 存储历史信号 {'date': ..., 'type': 'buy'/'sell', 'price': ...}
+    position = False
+    buy_price = 0.0
+    total_profit = 0.0
+    trades_count = 0
+    win_trades = 0
+    
+    if "yellow_line" not in d.columns:
+        d = add_base_indicators(d)
+        
+    closes = d["close"].values
+    dates = d["date"].values
+    highs = d["high"].values
+    lows = d["low"].values
+    volumes = d["volume"].values
+    opens = d["open"].values
+    pct_chgs = d["pct_chg"].values
+    
+    bbi = d["yellow_line"].values
+    white = d["white_line"].values
+    j_val = d["j"].values
+    ma5_vol = d["vol_ma5"].values
+    
+    # 从第30天开始回测，确保指标计算完整
+    for i in range(30, len(d)):
+        date = dates[i]
+        price = closes[i]
+        
+        # 1. 少妇战法 (BBI + KDJ大负值)
+        if strategy_name == "少妇战法 (BBI + KDJ大负值)":
+            j_thresh = params.get("j_threshold", -5)
+            bbi_window = params.get("bbi_window", 10)
+            
+            # BBI上升趋势判断: 今天的BBI大于N天前的BBI
+            bbi_rising = bbi[i] > bbi[i - bbi_window] if i >= bbi_window else False
+            # J值在超卖大负值
+            j_oversold = j_val[i] < j_thresh
+            # 价格在BBI上方或附近
+            above_bbi = price >= bbi[i] * 0.98
+            
+            buy_cond = bbi_rising and j_oversold and above_bbi
+            sell_cond = price < bbi[i] * 0.97 or (i > 0 and closes[i] < closes[i-1] * 0.95) # 止损或破位
+            
+        # 2. TePu战法 (放量突破+缩量低吸)
+        elif strategy_name == "TePu战法 (放量突破+缩量低吸)":
+            lookback = params.get("lookback", 15)
+            up_thresh = params.get("up_threshold", 3.0)
+            vol_thresh = params.get("vol_threshold", 0.67)
+            j_thresh = params.get("j_threshold", 30)
+            
+            # 寻找过去lookback天内是否有放量突破大阳线日 T
+            has_breakout = False
+            t_idx = -1
+            if i >= lookback:
+                for t in range(i - lookback, i):
+                    if pct_chgs[t] >= up_thresh and volumes[t] >= ma5_vol[t] * 1.5:
+                        has_breakout = True
+                        t_idx = t
+                        break
+            
+            # 检查此后是否持续缩量
+            is_shrinking = False
+            if has_breakout and t_idx != -1:
+                is_shrinking = True
+                for k in range(t_idx + 1, i + 1):
+                    if volumes[k] > volumes[t_idx] * vol_thresh:
+                        is_shrinking = False
+                        break
+            
+            # 今天J值回落
+            j_low = j_val[i] < j_thresh
+            
+            buy_cond = has_breakout and is_shrinking and j_low
+            sell_cond = price < bbi[i] * 0.97 or (t_idx != -1 and price < lows[t_idx] * 0.99)
+            
+        # 3. 补票战法 (趋势黄金坑)
+        else:
+            j_thresh = params.get("j_threshold", 30)
+            
+            # 趋势向上 (白线 >= 黄线，且股价在黄线之上)
+            trend_up = white[i] >= bbi[i] and price >= bbi[i]
+            # J值在最近3天内曾跌破阈值
+            j_drop = any(j_val[k] < j_thresh for k in range(max(0, i-2), i+1))
+            
+            buy_cond = trend_up and j_drop
+            sell_cond = price < bbi[i] * 0.97
+            
+        # 交易逻辑
+        if not position:
+            if buy_cond:
+                signals.append({'date': date, 'type': 'buy', 'price': price, 'index': i})
+                position = True
+                buy_price = price
+        else:
+            if sell_cond:
+                signals.append({'date': date, 'type': 'sell', 'price': price, 'index': i})
+                position = False
+                profit = (price - buy_price) / buy_price
+                total_profit += profit
+                trades_count += 1
+                if profit > 0:
+                    win_trades += 1
+                    
+    # 如果最后一天仍持仓，按现价计算未平仓收益
+    if position:
+        profit = (closes[-1] - buy_price) / buy_price
+        total_profit += profit
+        trades_count += 1
+        if profit > 0:
+            win_trades += 1
+            
+    win_rate = (win_trades / trades_count * 100) if trades_count > 0 else 0.0
+    
+    # 计算当前诊断 (最后一天)
+    last_idx = len(d) - 1
+    last_j = j_val[-1]
+    last_bbi = bbi[-1]
+    last_white = white[-1]
+    last_price = closes[-1]
+    
+    checklist = []
+    current_signal = "🔴 建议观望/卖出"
+    
+    if strategy_name == "少妇战法 (BBI + KDJ大负值)":
+        j_thresh = params.get("j_threshold", -5)
+        bbi_window = params.get("bbi_window", 10)
+        bbi_rising = bbi[-1] > bbi[-1 - bbi_window] if len(bbi) >= bbi_window else False
+        j_oversold = last_j < j_thresh
+        above_bbi = last_price >= last_bbi * 0.98
+        
+        checklist = [
+            {"name": f"BBI趋势向上 (当前 BBI > {bbi_window}天前)", "pass": bbi_rising, "desc": f"当前: {fmt_price(last_bbi)} vs {bbi_window}天前: {fmt_price(bbi[-1-bbi_window]) if len(bbi)>=bbi_window else '--'}"},
+            {"name": f"KDJ的J值处于超卖大负值 (J < {j_thresh})", "pass": j_oversold, "desc": f"当前 J值: {last_j:.2f}"},
+            {"name": "价格处于BBI线之上或附近", "pass": above_bbi, "desc": f"现价: {fmt_price(last_price)} vs BBI: {fmt_price(last_bbi)}"}
+        ]
+        if bbi_rising and j_oversold and above_bbi:
+            current_signal = "🟢 触发少妇战法买入信号 (大负值低吸)"
+        elif position:
+            current_signal = "🔵 持股观望中 (趋势未坏)"
+            
+    elif strategy_name == "TePu战法 (放量突破+缩量低吸)":
+        lookback = params.get("lookback", 15)
+        up_thresh = params.get("up_threshold", 3.0)
+        vol_thresh = params.get("vol_threshold", 0.67)
+        j_thresh = params.get("j_threshold", 30)
+        
+        has_breakout = False
+        t_idx = -1
+        for t in range(len(d) - lookback, len(d)):
+            if pct_chgs[t] >= up_thresh and volumes[t] >= ma5_vol[t] * 1.5:
+                has_breakout = True
+                t_idx = t
+                break
+                
+        is_shrinking = False
+        if has_breakout and t_idx != -1:
+            is_shrinking = True
+            for k in range(t_idx + 1, len(d)):
+                if volumes[k] > volumes[t_idx] * vol_thresh:
+                    is_shrinking = False
+                    break
+                    
+        j_low = last_j < j_thresh
+        
+        checklist = [
+            {"name": f"过去{lookback}天内有放量突破大阳线 (涨幅>={up_thresh}%)", "pass": has_breakout, "desc": f"{'找到突破日' if has_breakout else '未找到突破日'}"},
+            {"name": f"突破后成交量持续缩量 (Vol <= 突破日*{vol_thresh})", "pass": is_shrinking, "desc": f"当前量: {int(volumes[-1]/10000)}万 vs 突破日量: {int(volumes[t_idx]/10000) if t_idx!=-1 else '--'}万"},
+            {"name": f"J值回落到低位 (J < {j_thresh})", "pass": j_low, "desc": f"当前 J值: {last_j:.2f}"}
+        ]
+        if has_breakout and is_shrinking and j_low:
+            current_signal = "🟢 触发TePu战法买入信号 (缩量低吸点)"
+        elif position:
+            current_signal = "🔵 持股观望中 (趋势未坏)"
+            
+    else: # 补票战法
+        j_thresh = params.get("j_threshold", 30)
+        trend_up = last_white >= last_bbi and last_price >= last_bbi
+        j_drop = any(j_val[k] < j_thresh for k in range(max(0, len(d)-3), len(d)))
+        
+        checklist = [
+            {"name": "趋势处于多头区 (白线 >= 黄线 且价格在黄线之上)", "pass": trend_up, "desc": f"白线: {fmt_price(last_white)} vs 黄线: {fmt_price(last_bbi)}"},
+            {"name": f"最近3天内J值曾跌破黄金坑 (J < {j_thresh})", "pass": j_drop, "desc": f"当前 J值: {last_j:.2f}"}
+        ]
+        if trend_up and j_drop:
+            current_signal = "🟢 触发补票战法买入信号 (黄金坑上车)"
+        elif position:
+            current_signal = "🔵 持股观望中 (趋势未坏)"
+            
+    return {
+        "signals": signals,
+        "total_profit": total_profit * 100,
+        "trades_count": trades_count,
+        "win_rate": win_rate,
+        "checklist": checklist,
+        "current_signal": current_signal
+    }
+
+def chart_strategy_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
+    """
+    绘制战法历史信号标注图 (红买绿卖)
+    """
+    show = df.tail(60).copy()
+    fig = go.Figure()
+    
+    # 绘制收盘价折线
+    fig.add_trace(
+        go.Scatter(
+            x=show["date"],
+            y=show["close"],
+            mode="lines",
+            line=dict(color="#2e6cf6", width=2),
+            name="收盘价"
+        )
+    )
+    
+    # 绘制黄线 (BBI)
+    fig.add_trace(
+        go.Scatter(
+            x=show["date"],
+            y=show["yellow_line"],
+            mode="lines",
+            line=dict(color="#f79009", width=1.5, dash="dash"),
+            name="黄线 (BBI)"
+        )
+    )
+    
+    # 过滤出最近60天的信号
+    show_dates = set(show["date"])
+    buy_signals = [s for s in signals if s["type"] == "buy" and s["date"] in show_dates]
+    sell_signals = [s for s in signals if s["type"] == "sell" and s["date"] in show_dates]
+    
+    # 标注买入点
+    if buy_signals:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in buy_signals],
+                y=[s["price"] for s in buy_signals],
+                mode="markers+text",
+                marker=dict(color="#12b76a", size=12, symbol="triangle-up"),
+                text=["买"] * len(buy_signals),
+                textposition="bottom center",
+                textfont=dict(color="#12b76a", size=12, weight="bold"),
+                name="买入信号"
+            )
+        )
+        
+    # 标注卖出点
+    if sell_signals:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in sell_signals],
+                y=[s["price"] for s in sell_signals],
+                mode="markers+text",
+                marker=dict(color="#f04438", size=12, symbol="triangle-down"),
+                text=["卖"] * len(sell_signals),
+                textposition="top center",
+                textfont=dict(color="#f04438", size=12, weight="bold"),
+                name="卖出信号"
+            )
+        )
+        
+    fig.update_layout(
+        height=350,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", x=0, y=1.04),
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(120,140,160,0.15)")
+    return fig
+
+
+# ==============================================================================
 # 14. 导航与全局状态初始化
 # ==============================================================================
 if "selected_stock_code" not in st.session_state:
@@ -1106,161 +1387,242 @@ elif page == "2. 个股分析页":
             b3_res = detect_b3(df)
             exit_res = detect_exit_signals(df)
             
-            # A. 顶部基本信息 (多维度量化评分)
-            st.markdown("#### A. 顶部基本信息")
-            with st.container(border=True):
-                col_i1, col_i2 = st.columns([1, 2])
-                with col_i1:
-                    st.subheader(f"{stock_name} ({code})")
-                    st.markdown(f"**当前价格**：<span style='font-size:1.6rem; font-weight:900;'>{fmt_price(real_price)} {currency_unit}</span>", unsafe_allow_html=True)
-                    pct_color = "badge-green" if real_pct >= 0 else "badge-red"
-                    st.markdown(f"**今日涨跌**：<span class='z-badge {pct_color}' style='font-size:1.1rem;'>{fmt_pct(real_pct)}</span>", unsafe_allow_html=True)
-                with col_i2:
-                    st.markdown("**📊 曼城五维度量化评分**")
-                    
-                    score_env = 68
-                    score_board = 85 if any(x in stock_name for x in ["通信", "半导体", "科技", "TECH", "苹果", "特斯拉"]) else 70
-                    score_structure = int(real_price > last["yellow_line"]) * 30 + int(last["white_line"] > last["yellow_line"]) * 40 + int(last["j"] < 50) * 30
-                    
-                    dist_to_yellow = abs(real_price / last["yellow_line"] - 1) * 100
-                    score_ratio = int(max(0, 100 - dist_to_yellow * 8))
-                    
-                    score_risk = 90 if exit_res["s1"] or exit_res["didi"] else int(dist_to_yellow * 5)
-                    
-                    st.markdown(f"• **市场环境分**：**{score_env}/100** (基于三大指数20日均线站稳比例 100%)")
-                    st.markdown(f"• **板块分**：**{score_board}/100** (基于所属行业近30日进入热力矩阵前排频次)")
-                    st.markdown(f"• **个股结构分**：**{score_structure}/100** (白线 {fmt_price(last['white_line'])} {'高于' if last['white_line']>=last['yellow_line'] else '低于'} 黄线 {fmt_price(last['yellow_line'])})")
-                    st.markdown(f"• **交易性价比分**：**{score_ratio}/100** (现价离黄线支撑位仅 **{dist_to_yellow:.1f}%**)")
-                    st.markdown(f"• **风险分**：<span style='color:#f04438; font-weight:800;'>{score_risk}/100</span> (基于逃顶信号与高位乖离度检测)", unsafe_allow_html=True)
-
-            # B. 一句话结论
-            st.markdown("#### B. 一句话结论")
-            if b2_res["signal"] or b3_res["signal"]:
-                conclusion = "可重点观察"
-                conclusion_desc = "趋势强劲，放量突破或缩量中继结构完整，主力控盘牛绳紧绷，建议列入首要狙击名单。"
-                conclusion_style = "badge-green"
-            elif b1_res["signal"]:
-                conclusion = "条件接近成立"
-                conclusion_desc = "触发 B1 信号。KDJ的J值回落至超卖区，成交量健康萎缩，已到极佳低吸性价比区间。"
-                conclusion_style = "badge-blue"
-            elif exit_res["s1"] or exit_res["didi"] or last["white_line"] < last["yellow_line"]:
-                conclusion = "直接放弃"
-                conclusion_desc = "趋势破位（白线已掉到黄线下方，牛绳已断）或触发高位逃顶信号，坚决不接飞刀！"
-                conclusion_style = "badge-red"
-            else:
-                conclusion = "暂不建议出手"
-                conclusion_desc = "虽趋势未坏，但当前价格离黄线买点过远，性价比极低，追高极易吃面，耐心等待回踩。"
-                conclusion_style = "badge-orange"
-
-            with st.container(border=True):
-                st.markdown(f"**核心判定**：<span class='z-badge {conclusion_style}' style='font-size:1.3rem;'>{conclusion}</span>", unsafe_allow_html=True)
-                st.markdown(f"**数据假设与推演**：{conclusion_desc}")
-
-            # C. 个股定位
-            st.markdown("#### C. 个股定位")
-            if real_pct >= 9.8:
-                position = "龙头"
-                pos_desc = "日内最强先锋，弹性极大，适合打板或强势分歧低吸。"
-            elif last["volume"] >= last["vol_ma5_prev"] * 2.0:
-                position = "中军"
-                pos_desc = "大市值、大成交量核心，代表板块中坚力量，走势沉稳。"
-            elif b3_res["signal"]:
-                position = "趋势票"
-                pos_desc = "沿着知行趋势双线稳步攀升，适合在缩量回踩黄线时反复做T。"
-            elif last["white_line"] < last["yellow_line"]:
-                position = "反弹票"
-                pos_desc = "处于下行通道中，牛绳已断，当前的上涨仅定义为超跌反弹，不宜恋战。"
-            else:
-                position = "跟风"
-                pos_desc = "随板块龙头上涨，缺乏独立自主资金，溢价较低，随时准备撤离。"
-
-            with st.container(border=True):
-                st.markdown(f"**个股属性定位**：<span class='z-badge badge-blue' style='font-size:1.2rem;'>{position}</span>", unsafe_allow_html=True)
-                st.markdown(f"**打法建议**：{pos_desc}")
-
-            # D. 结构分析
-            st.markdown("#### D. 结构分析")
-            trend_ok = last["white_line"] >= last["yellow_line"]
-            vol_ok = last["volume"] <= last["vol_ma5_prev"] * 1.1 if real_pct < 0 else last["volume"] >= last["vol_ma5_prev"] * 0.9
-            near_line = dist_to_yellow <= 5.0
-            has_flaw = exit_res["s1"] or exit_res["didi"]
-            prev_high = df["high"].iloc[-60:-1].max()
-            near_resistance = real_price >= prev_high * 0.95
-            far_from_buy = dist_to_yellow >= 8.0
-            alternating = df["pct_chg"].tail(10).std() > 1.5 
+            # ==================================================================
+            # 🚀 新增：选项卡切换（经典双线诊断 vs 视频专属战法）
+            # ==================================================================
+            tab_classic, tab_video = st.tabs(["📊 经典双线诊断", "⚡ 视频专属战法 (BV1bUG86)"])
             
-            if trend_ok and dist_to_yellow < 3.0:
-                stage = "建仓波 / 回踩确认段"
-            elif trend_ok and last["j"] > 80:
-                stage = "拉升冲刺波"
-            else:
-                stage = "灾后重建段"
+            # ------------------------------------------------------------------
+            # 选项卡一：经典双线诊断（保留你原本的全部功能）
+            # ------------------------------------------------------------------
+            with tab_classic:
+                # A. 顶部基本信息 (多维度量化评分)
+                st.markdown("#### A. 顶部基本信息")
+                with st.container(border=True):
+                    col_i1, col_i2 = st.columns([1, 2])
+                    with col_i1:
+                        st.subheader(f"{stock_name} ({code})")
+                        st.markdown(f"**当前价格**：<span style='font-size:1.6rem; font-weight:900;'>{fmt_price(real_price)} {currency_unit}</span>", unsafe_allow_html=True)
+                        pct_color = "badge-green" if real_pct >= 0 else "badge-red"
+                        st.markdown(f"**今日涨跌**：<span class='z-badge {pct_color}' style='font-size:1.1rem;'>{fmt_pct(real_pct)}</span>", unsafe_allow_html=True)
+                    with col_i2:
+                        st.markdown("**📊 曼城五维度量化评分**")
+                        
+                        score_env = 68
+                        score_board = 85 if any(x in stock_name for x in ["通信", "半导体", "科技", "TECH", "苹果", "特斯拉"]) else 70
+                        score_structure = int(real_price > last["yellow_line"]) * 30 + int(last["white_line"] > last["yellow_line"]) * 40 + int(last["j"] < 50) * 30
+                        
+                        dist_to_yellow = abs(real_price / last["yellow_line"] - 1) * 100
+                        score_ratio = int(max(0, 100 - dist_to_yellow * 8))
+                        
+                        score_risk = 90 if exit_res["s1"] or exit_res["didi"] else int(dist_to_yellow * 5)
+                        
+                        st.markdown(f"• **市场环境分**：**{score_env}/100** (基于三大指数20日均线站稳比例 100%)")
+                        st.markdown(f"• **板块分**：**{score_board}/100** (基于所属行业近30日进入热力矩阵前排频次)")
+                        st.markdown(f"• **个股结构分**：**{score_structure}/100** (白线 {fmt_price(last['white_line'])} {'高于' if last['white_line']>=last['yellow_line'] else '低于'} 黄线 {fmt_price(last['yellow_line'])})")
+                        st.markdown(f"• **交易性价比分**：**{score_ratio}/100** (现价离黄线支撑位仅 **{dist_to_yellow:.1f}%**)")
+                        st.markdown(f"• **风险分**：<span style='color:#f04438; font-weight:800;'>{score_risk}/100</span> (基于逃顶信号与高位乖离度检测)", unsafe_allow_html=True)
 
-            struct_score = round(10.0 - int(not trend_ok)*3 - int(not vol_ok)*1.5 - int(far_from_buy)*2 - int(has_flaw)*3, 1)
+                # B. 一句话结论
+                st.markdown("#### B. 一句话结论")
+                if b2_res["signal"] or b3_res["signal"]:
+                    conclusion = "可重点观察"
+                    conclusion_desc = "趋势强劲，放量突破或缩量中继结构完整，主力控盘牛绳紧绷，建议列入首要狙击名单。"
+                    conclusion_style = "badge-green"
+                elif b1_res["signal"]:
+                    conclusion = "条件接近成立"
+                    conclusion_desc = "触发 B1 信号。KDJ的J值回落至超卖区，成交量健康萎缩，已到极佳低吸性价比区间。"
+                    conclusion_style = "badge-blue"
+                elif exit_res["s1"] or exit_res["didi"] or last["white_line"] < last["yellow_line"]:
+                    conclusion = "直接放弃"
+                    conclusion_desc = "趋势破位（白线已掉到黄线下方，牛绳已断）或触发高位逃顶信号，坚决不接飞刀！"
+                    conclusion_style = "badge-red"
+                else:
+                    conclusion = "暂不建议出手"
+                    conclusion_desc = "虽趋势未坏，但当前价格离黄线买点过远，性价比极低，追高极易吃面，耐心等待回踩。"
+                    conclusion_style = "badge-orange"
 
-            with st.container(border=True):
-                st.markdown(f"**知行双线结构评分**：<span style='font-size:1.5rem; font-weight:900; color:#2e6cf6;'>{struct_score} / 10</span>", unsafe_allow_html=True)
-                
-                col_d1, col_s2 = st.columns(2)
-                with col_d1:
-                    st.markdown("🟢 **结构优点与数据支撑**")
-                    st.markdown(f"• **趋势完整度**：{'完整' if trend_ok else '破位'} (白线 {fmt_price(last['white_line'])} {'在黄线上方运行' if trend_ok else '已跌破黄线'})")
-                    st.markdown(f"• **量价健康度**：{'健康' if vol_ok else '异常'} (今日成交量 {int(last['volume']/10000)} 万股，5日均量 {int(last['vol_ma5']/10000)} 万股)")
-                    st.markdown(f"• **呼吸感节奏**：{'有张有弛，呼吸感极佳' if alternating else '走势呆滞或无量阴跌'}")
-                    st.markdown(f"• **当前所处结构**：**{stage}**")
-                with col_s2:
-                    st.markdown("🔴 **潜在风险与瑕疵排查**")
-                    st.markdown(f"• **关键线距离**：离黄线支撑位 **{dist_to_yellow:.1f}%** ({'处于安全买点区' if near_line else '乖离率过大，谨防回踩'})")
-                    st.markdown(f"• **上方标准压力**：{'临近前高阻力区' if near_resistance else '上方筹码分布健康，无明显压力'}")
-                    st.markdown(f"• **明显瑕疵检测**：<span style='color:#f04438; font-weight:800;'>{exit_res['desc']}</span>", unsafe_allow_html=True)
+                with st.container(border=True):
+                    st.markdown(f"**核心判定**：<span class='z-badge {conclusion_style}' style='font-size:1.3rem;'>{conclusion}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**数据假设与推演**：{conclusion_desc}")
 
-            # K线与知行趋势双线图表
-            st.plotly_chart(chart_stock(df), use_container_width=True)
+                # C. 个股定位
+                st.markdown("#### C. 个股定位")
+                if real_pct >= 9.8:
+                    position = "龙头"
+                    pos_desc = "日内最强先锋，弹性极大，适合打板或强势分歧低吸。"
+                elif last["volume"] >= last["vol_ma5_prev"] * 2.0:
+                    position = "中军"
+                    pos_desc = "大市值、大成交量核心，代表板块中坚力量，走势沉稳。"
+                elif b3_res["signal"]:
+                    position = "趋势票"
+                    pos_desc = "沿着知行趋势双线稳步攀升，适合在缩量回踩黄线时反复做T。"
+                elif last["white_line"] < last["yellow_line"]:
+                    position = "反弹票"
+                    pos_desc = "处于下行通道中，牛绳已断，当前的上涨仅定义为超跌反弹，不宜恋战。"
+                else:
+                    position = "跟风"
+                    pos_desc = "随板块龙头上涨，缺乏独立自主资金，溢价较低，随时准备撤离。"
 
-            # E. 专属交易计划单 (自适应货币单位)
-            st.markdown("#### E. 专属交易计划单 (机构级实战执行方案)")
-            yellow_price = last["yellow_line"]
-            white_price = last["white_line"]
-            stop_loss_price = yellow_price * 0.97 
-            target_1 = yellow_price * 1.382 
-            target_2 = yellow_price * 1.618 
-            vol_ma5_val = last["vol_ma5"]
-            target_vol_shrink = vol_ma5_val * 0.85 
-            target_vol_expand = vol_ma5_val * 1.5 
-            
-            with st.container(border=True):
-                st.markdown(f"### 📋 《{stock_name} ({code})》知行合一实战执行计划")
+                with st.container(border=True):
+                    st.markdown(f"**个股属性定位**：<span class='z-badge badge-blue' style='font-size:1.2rem;'>{position}</span>", unsafe_allow_html=True)
+                    st.markdown(f"**打法建议**：{pos_desc}")
+
+                # D. 结构分析
+                st.markdown("#### D. 结构分析")
+                trend_ok = last["white_line"] >= last["yellow_line"]
+                vol_ok = last["volume"] <= last["vol_ma5_prev"] * 1.1 if real_pct < 0 else last["volume"] >= last["vol_ma5_prev"] * 0.9
+                near_line = dist_to_yellow <= 5.0
+                has_flaw = exit_res["s1"] or exit_res["didi"]
+                prev_high = df["high"].iloc[-60:-1].max()
+                near_resistance = real_price >= prev_high * 0.95
+                far_from_buy = dist_to_yellow >= 8.0
+                alternating = df["pct_chg"].tail(10).std() > 1.5 
                 
-                col_m1, col_m2, col_m3 = st.columns(3)
-                with col_m1:
-                    st.metric("基准黄线支撑", f"{fmt_price(yellow_price)} {currency_unit}")
-                with col_m2:
-                    st.metric("建议试错买入", f"{fmt_price(yellow_price * 1.01)} {currency_unit}", delta="性价比极佳", delta_color="normal")
-                with col_m3:
-                    st.metric("坚决止损出局", f"{fmt_price(stop_loss_price)} {currency_unit}", delta="-3.00%", delta_color="inverse")
+                if trend_ok and dist_to_yellow < 3.0:
+                    stage = "建仓波 / 回踩确认段"
+                elif trend_ok and last["j"] > 80:
+                    stage = "拉升冲刺波"
+                else:
+                    stage = "灾后重建段"
+
+                struct_score = round(10.0 - int(not trend_ok)*3 - int(not vol_ok)*1.5 - int(far_from_buy)*2 - int(has_flaw)*3, 1)
+
+                with st.container(border=True):
+                    st.markdown(f"**知行双线结构评分**：<span style='font-size:1.5rem; font-weight:900; color:#2e6cf6;'>{struct_score} / 10</span>", unsafe_allow_html=True)
+                    
+                    col_d1, col_s2 = st.columns(2)
+                    with col_d1:
+                        st.markdown("🟢 **结构优点与数据支撑**")
+                        st.markdown(f"• **趋势完整度**：{'完整' if trend_ok else '破位'} (白线 {fmt_price(last['white_line'])} {'在黄线上方运行' if trend_ok else '已跌破黄线'})")
+                        st.markdown(f"• **量价健康度**：{'健康' if vol_ok else '异常'} (今日成交量 {int(last['volume']/10000)} 万股，5日均量 {int(last['vol_ma5']/10000)} 万股)")
+                        st.markdown(f"• **呼吸感节奏**：{'有张有弛，呼吸感极佳' if alternating else '走势呆滞或无量阴跌'}")
+                        st.markdown(f"• **当前所处结构**：**{stage}**")
+                    with col_s2:
+                        st.markdown("🔴 **潜在风险与瑕疵排查**")
+                        st.markdown(f"• **关键线距离**：离黄线支撑位 **{dist_to_yellow:.1f}%** ({'处于安全买点区' if near_line else '乖离率过大，谨防回踩'})")
+                        st.markdown(f"• **上方标准压力**：{'临近前高阻力区' if near_resistance else '上方筹码分布健康，无明显压力'}")
+                        st.markdown(f"• **明显瑕疵检测**：<span style='color:#f04438; font-weight:800;'>{exit_res['desc']}</span>", unsafe_allow_html=True)
+
+                # K线与知行趋势双线图表
+                st.plotly_chart(chart_stock(df), use_container_width=True)
+
+                # E. 专属交易计划单 (自适应货币单位)
+                st.markdown("#### E. 专属交易计划单 (机构级实战执行方案)")
+                yellow_price = last["yellow_line"]
+                white_price = last["white_line"]
+                stop_loss_price = yellow_price * 0.97 
+                target_1 = yellow_price * 1.382 
+                target_2 = yellow_price * 1.618 
+                vol_ma5_val = last["vol_ma5"]
+                target_vol_shrink = vol_ma5_val * 0.85 
+                target_vol_expand = vol_ma5_val * 1.5 
                 
-                st.markdown("---")
+                with st.container(border=True):
+                    st.markdown(f"### 📋 《{stock_name} ({code})》知行合一实战执行计划")
+                    
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    with col_m1:
+                        st.metric("基准黄线支撑", f"{fmt_price(yellow_price)} {currency_unit}")
+                    with col_m2:
+                        st.metric("建议试错买入", f"{fmt_price(yellow_price * 1.01)} {currency_unit}", delta="性价比极佳", delta_color="normal")
+                    with col_m3:
+                        st.metric("坚决止损出局", f"{fmt_price(stop_loss_price)} {currency_unit}", delta="-3.00%", delta_color="inverse")
+                    
+                    st.markdown("---")
+                    
+                    st.markdown(f"""
+                    **1. 观察期（缩量企稳）**：
+                    等待日K线回踩黄线 **{fmt_price(yellow_price)} {currency_unit}** 附近。成交量必须萎缩至 **{int(target_vol_shrink/10000)} 万股** 以下（5日均量的 85%），且 KDJ 的 J 值冷却至 **30 以下**，证明抛压衰竭。
+                    
+                    **2. 试错期（分批建仓）**：
+                    当股价触及 **{fmt_price(yellow_price * 1.01)} {currency_unit}** 附近且盘口有资金承接时，首次买入 **10% 试错仓位**。此时离黄线极近，交易性价比极高。
+                    
+                    **3. 加仓期（放量确认）**：
+                    若股价放量大阳线突破前高 **{fmt_price(prev_high)} {currency_unit}**，且日成交量放大至 **{int(target_vol_expand/10000)} 万股** 以上（5日均量的 1.5 倍），追加 **20% 确认仓位**，此时牛绳（白线）紧绷，进入主升浪。
+                    
+                    **4. 止损期（生死防线）**：
+                    若收盘价不幸跌破 **{fmt_price(stop_loss_price)} {currency_unit}**（黄线下方 3%），或触发“滴滴战法”（连续两阴下台阶且跌破黄线），**必须无条件全仓斩仓离场！走错也要走，绝不抗单！**
+                    
+                    **5. 止盈期（祖冲之投影）**：
+                    * **第一目标位**：**{fmt_price(target_1)} {currency_unit}**（祖冲之 1.382 投影），建议减仓 50% 锁定利润。
+                    * **第二目标位**：**{fmt_price(target_2)} {currency_unit}**（祖冲之 1.618 投影），建议全仓止盈或仅留 5% 利润底仓。
+                    
+                    **6. 放弃期（趋势终结）**：
+                    * 若白线 **{fmt_price(white_price)} {currency_unit}** 死叉黄线 **{fmt_price(yellow_price)} {currency_unit}**，代表中线趋势彻底终结，立刻将该股拉黑，不再进行任何操作。
+                    """)
+
+            # ------------------------------------------------------------------
+            # 选项卡二：视频专属战法（新增的独立功能）
+            # ------------------------------------------------------------------
+            with tab_video:
+                st.markdown("#### ⚡ 视频专属战法诊断与回测 (BV1bUG86)")
+                st.caption("基于 Z哥 经典视频战法规则，自动计算当前信号、历史买卖点、累计收益率与胜率。")
                 
-                st.markdown(f"""
-                **1. 观察期（缩量企稳）**：
-                等待日K线回踩黄线 **{fmt_price(yellow_price)} {currency_unit}** 附近。成交量必须萎缩至 **{int(target_vol_shrink/10000)} 万股** 以下（5日均量的 85%），且 KDJ 的 J 值冷却至 **30 以下**，证明抛压衰竭。
+                # 战法选择
+                v_strategy = st.selectbox(
+                    "选择视频战法规则",
+                    [
+                        "少妇战法 (BBI + KDJ大负值)",
+                        "TePu战法 (放量突破+缩量低吸)",
+                        "补票战法 (趋势中继黄金坑)"
+                    ],
+                    key="video_strategy_selector"
+                )
                 
-                **2. 试错期（分批建仓）**：
-                当股价触及 **{fmt_price(yellow_price * 1.01)} {currency_unit}** 附近且盘口有资金承接时，首次买入 **10% 试错仓位**。此时离黄线极近，交易性价比极高。
+                # 动态参数调节 (使用折叠器，保持手机端页面整洁)
+                with st.expander("⚙️ 战法参数微调 (点击展开)", expanded=False):
+                    params = {}
+                    if v_strategy == "少妇战法 (BBI + KDJ大负值)":
+                        params["j_threshold"] = st.slider("KDJ J值低吸阈值", min_value=-50, max_value=20, value=-5, step=5)
+                        params["bbi_window"] = st.slider("BBI上升趋势回溯窗口 (天)", min_value=3, max_value=20, value=10)
+                    elif v_strategy == "TePu战法 (放量突破+缩量低吸)":
+                        params["lookback"] = st.slider("突破日回溯窗口 (天)", min_value=5, max_value=30, value=15)
+                        params["up_threshold"] = st.slider("突破日最低涨幅 (%)", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
+                        params["vol_threshold"] = st.slider("回调期缩量比例 (较突破日)", min_value=0.3, max_value=1.0, value=0.67, step=0.05)
+                        params["j_threshold"] = st.slider("今天J值回落买入阈值", min_value=0, max_value=50, value=30, step=5)
+                    else: # 补票战法
+                        params["j_threshold"] = st.slider("黄金坑J值超卖阈值", min_value=0, max_value=50, value=30, step=5)
                 
-                **3. 加仓期（放量确认）**：
-                若股价放量大阳线突破前高 **{fmt_price(prev_high)} {currency_unit}**，且日成交量放大至 **{int(target_vol_expand/10000)} 万股** 以上（5日均量的 1.5 倍），追加 **20% 确认仓位**，此时牛绳（白线）紧绷，进入主升浪。
+                # 运行回测与诊断
+                v_res = run_strategy_backtest(df, v_strategy, params)
                 
-                **4. 止损期（生死防线）**：
-                若收盘价不幸跌破 **{fmt_price(stop_loss_price)} {currency_unit}**（黄线下方 3%），或触发“滴滴战法”（连续两阴下台阶且跌破黄线），**必须无条件全仓斩仓离场！走错也要走，绝不抗单！**
+                # A. 战法诊断卡片
+                st.markdown("##### A. 当前战法诊断")
+                with st.container(border=True):
+                    sig_val = v_res["current_signal"]
+                    if "🟢" in sig_val:
+                        sig_style = "badge-green"
+                    elif "🔵" in sig_val:
+                        sig_style = "badge-blue"
+                    else:
+                        sig_style = "badge-red"
+                        
+                    st.markdown(f"**当前信号**：<span class='z-badge {sig_style}' style='font-size:1.2rem;'>{sig_val}</span>", unsafe_allow_html=True)
+                    
+                    # 条件检查清单
+                    st.markdown("**条件检查清单**：")
+                    for item in v_res["checklist"]:
+                        icon = "✅" if item["pass"] else "❌"
+                        color = "#12b76a" if item["pass"] else "#70809b"
+                        st.markdown(f"<span style='color:{color}; font-weight:bold;'>{icon} {item['name']}</span> <span style='font-size:0.85rem; color:var(--subtext); margin-left:10px;'>({item['desc']})</span>", unsafe_allow_html=True)
                 
-                **5. 止盈期（祖冲之投影）**：
-                * **第一目标位**：**{fmt_price(target_1)} {currency_unit}**（祖冲之 1.382 投影），建议减仓 50% 锁定利润。
-                * **第二目标位**：**{fmt_price(target_2)} {currency_unit}**（祖冲之 1.618 投影），建议全仓止盈或仅留 5% 利润底仓。
+                # B. 历史回测表现
+                st.markdown("##### B. 历史回测表现")
+                with st.container(border=True):
+                    col_b1, col_b2, col_b3 = st.columns(3)
+                    with col_b1:
+                        profit_val = v_res["total_profit"]
+                        p_color = "color:#12b76a;" if profit_val >= 0 else "color:#f04438;"
+                        st.markdown(f"**累计收益率**：<span style='font-size:1.4rem; font-weight:900; {p_color}'>{profit_val:+.2f}%</span>", unsafe_allow_html=True)
+                    with col_b2:
+                        st.markdown(f"**交易次数**：<span style='font-size:1.4rem; font-weight:900;'>{v_res['trades_count']} 次</span>", unsafe_allow_html=True)
+                    with col_b3:
+                        st.markdown(f"**策略胜率**：<span style='font-size:1.4rem; font-weight:900; color:#2e6cf6;'>{v_res['win_rate']:.1f}%</span>", unsafe_allow_html=True)
                 
-                **6. 放弃期（趋势终结）**：
-                * 若白线 **{fmt_price(white_price)} {currency_unit}** 死叉黄线 **{fmt_price(yellow_price)} {currency_unit}**，代表中线趋势彻底终结，立刻将该股拉黑，不再进行任何操作。
-                """)
+                # C. 信号标注图表
+                st.markdown("##### C. 战法历史信号标注 (红买绿卖)")
+                st.plotly_chart(chart_strategy_signals(df, v_res["signals"]), use_container_width=True)
 
 
 # ------------------------------------------------------------------------------

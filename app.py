@@ -1291,11 +1291,12 @@ def chart_fiveday_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
 
 
 # ==============================================================================
-# 13.3. 🚀 新增：智能战法深度分析报告生成器
+# 13.3. 🚀 新增：智能战法深度分析报告生成器 (100% 实时动态绑定)
 # ==============================================================================
 def generate_detailed_report(df: pd.DataFrame, stock_name: str, code: str, strategy_name: str, res: dict, params: dict, currency_unit: str) -> str:
     last = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else last
+    prev_2 = df.iloc[-3] if len(df) > 2 else prev
     price = last["close"]
     pct = last["pct_chg"]
     vol = last["volume"]
@@ -1308,123 +1309,131 @@ def generate_detailed_report(df: pd.DataFrame, stock_name: str, code: str, strat
     vol_ma20 = last.get("vol_ma20", np.nan)
     
     report = []
-    report.append(f"## 📋 《{stock_name} ({code})》{strategy_name} 深度逻辑分析报告")
-    report.append(f"**报告生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | **当前价格**：{price:.2f} {currency_unit} ({pct:+.2f}%)")
-    report.append("---")
+    report.append(f"# 第一部分：{stock_name} ({code}) {strategy_name}深度分析报告")
+    report.append(f"""
+> **标的**：{stock_name} ({code})  
+> **当前战法状态**：{res['current_signal']}  
+> **最新收盘价**：{price:.2f} {currency_unit} (基准日：{last['date'].strftime('%Y-%m-%d')})  
+> **5日均线 (MA5)**：约 {ma5:.2f} {currency_unit}  
+""")
+    
+    report.append("## 一、 战法核心逻辑与本质")
+    if "五日线" in strategy_name:
+        report.append(
+            "本战法是**“趋势 + 量能 + 情绪 + 风控”**的强势股主升浪交易模型。其核心思想是**“不预测，只跟随”**。\n\n"
+            "* **5日均线**代表短期市场最活跃资金的平均持有成本。股价能沿着5日线上涨，说明多头资金态度极其强硬，不允许回调过深。\n"
+            "* **分歧与共振**：大牛股在启动初期往往伴随着巨大的市场分歧（看空声多、大众犹豫），但资金却用真金白银放量推高股价。本战法就是通过“三步确认法”过滤掉无量诱多，精准捕捉主力资金发动的主升浪。"
+        )
+    elif "少妇" in strategy_name:
+        report.append(
+            "本战法是**“大势向上，小势回调”**的强逻辑低吸模型。\n\n"
+            "* **中线生命线 (BBI)**：确认主力资金中期控盘方向向上，在上升趋势中运行。\n"
+            "* **超卖极限 (KDJ J值大负值)**：在股价短期顺势回调、散户恐慌盘涌出导致 J 值跌入大负值（超卖极限）时，进行逆向思维的左侧安全低吸。"
+        )
+    elif "TePu" in strategy_name:
+        report.append(
+            "本战法是经典的**“放量突破 + 缩量低吸”**中继交易模型。\n\n"
+            "* **放量长阳突破**：主力资金通过放量长阳突破关键阻力位，向市场宣告控盘态度。\n"
+            "* **缩量洗盘**：主力主动进行缩量洗盘，洗出不坚定的跟风盘。当成交量极度萎缩、且 J 值回落到低位时，即为资金共振的第二买点。"
+        )
+    else:
+        report.append(
+            "本战法是针对**强趋势主升浪个股的“半路补票”**交易模型。\n\n"
+            "* **趋势多头**：当个股处于白线在黄线上方的强多头主升浪中，说明上升趋势极强。\n"
+            "* **黄金坑出现**：由于短期市场波动或大盘拖累，股价出现短暂的“黄金坑”式下探，导致 J 值快速回落到 30 以下。此时趋势并未走坏，而是为主升浪中途踏空的资金提供了一个安全、快速的补票上车机会。"
+        )
+        
+    report.append("## 二、 详细买入逻辑拆解")
+    if "五日线" in strategy_name:
+        recent_df = df.tail(10)
+        max_vol_idx = recent_df["volume"].idxmax()
+        max_vol_row = df.loc[max_vol_idx]
+        max_vol_date = max_vol_row["date"].strftime("%m月%d日")
+        max_vol_val = max_vol_row["volume"]
+        max_vol_pct = max_vol_row["pct_chg"]
+        max_vol_ma20 = max_vol_row["vol_ma20"]
+        
+        next_day_ret_str = ""
+        if max_vol_idx < df.index[-1]:
+            next_day_row = df.loc[max_vol_idx + 1]
+            next_day_vol = next_day_row["volume"]
+            ratio = (next_day_vol / max_vol_val) * 100
+            next_day_ret_str = f"次日（{next_day_row['date'].strftime('%m月%d日')}）成交量为 **{int(next_day_vol/10000)}万股**，保持在首日巨量的 **{ratio:.1f}%**，{'未低于' if ratio >= params.get('next_day_vol_ratio', 0.55)*100 else '低于'}首日巨量的 {int(params.get('next_day_vol_ratio', 0.55)*100)}% 确认线。"
+        else:
+            next_day_ret_str = "由于该爆发日为最新交易日，次日量能保持情况需在下一个交易日收盘后进行确认。"
+        
+        report.append(f"""
+1. **看趋势（基准）**：
+   * 股价当前收盘价为 **{price:.2f} {currency_unit}**，{'已成功站上' if price > ma5 else '尚未站上'} 5日均线（**{ma5:.2f} {currency_unit}**）。短期资金态度{'偏向多头控盘' if price > ma5 else '仍需等待站稳确认'}。
+2. **看资金（持续）**：
+   * 近期三个交易日成交量分别为：今日 **{int(vol/10000)}万股**、昨日 **{int(prev['volume']/10000)}万股**、前日 **{int(prev_2['volume']/10000)}万股**。{'呈现连续放量态势，主力持续建仓迹象明显' if (vol > prev['volume'] > prev_2['volume']) else '成交量波动较大，主力资金处于分歧换手阶段'}。
+3. **看确认（爆发）**：
+   * 在 **{max_vol_date}**，股价涨幅达 **{max_vol_pct:+.2f}%**，成交量爆出 **{int(max_vol_val/10000)}万股** 的巨量。
+   * 达到了当时20日均量的 **{max_vol_val / max_vol_ma20:.2f}倍**，且远远超过10日内最低成交量的 **{max_vol_val / max_vol_row['min_vol_10']:.2f}倍**。
+   * **关键细节确认**：{next_day_ret_str}
+""")
+    elif "少妇" in strategy_name:
+        report.append(f"""
+1. **中线趋势**：当前黄线(BBI)价格为 **{bbi:.2f} {currency_unit}**，股价为 **{price:.2f} {currency_unit}**，{'守在黄线支撑上方，中线多头趋势完好' if price >= bbi else '已跌破黄线，需警惕中线走弱'}。
+2. **超卖冷却**：当前 KDJ 的 J 值为 **{j_val:.2f}**，{'已成功跌破超卖阈值 ' + str(params.get('j_threshold', -5)) + '，散户恐慌盘涌出，左侧低吸性价比极高' if j_val < params.get('j_threshold', -5) else '尚未跌入极限超卖区，可耐心等待恐慌盘进一步涌出'}。
+3. **缩量配合**：今日成交量为 **{int(vol/10000)}万股**，5日均量为 **{int(vol_ma5/10000)}万股**，成交量比值为 **{vol/vol_ma5:.2f}**，{'呈现缩量回调特征，符合无量下跌的洗盘逻辑' if vol <= vol_ma5 * 0.85 else '量能仍未萎缩，说明分歧依然较大'}。
+""")
+    elif "TePu" in strategy_name:
+        report.append(f"""
+1. **寻找突破日**：过去 {params.get('lookback', 15)} 天内，最高成交量出现在 **{df.tail(params.get('lookback', 15))['date'].iloc[df.tail(params.get('lookback', 15))['volume'].argmax()].strftime('%m月%d日')}**，成交量为 **{int(df.tail(params.get('lookback', 15))['volume'].max()/10000)}万股**，涨幅达 **{df.tail(params.get('lookback', 15))['pct_chg'].max():+.2f}%**，符合放量长阳突破标准。
+2. **缩量洗盘度**：今日成交量为 **{int(vol/10000)}万股**，较突破日最大量萎缩至 **{vol / df.tail(params.get('lookback', 15))['volume'].max() * 100:.1f}%**，{'已达到极度缩量洗盘标准（低于' + str(int(params.get('vol_threshold', 0.67)*100)) + '%）' if vol <= df.tail(params.get('lookback', 15))['volume'].max() * params.get('vol_threshold', 0.67) else '量能尚未萎缩到位，主力洗盘可能仍在继续'}。
+3. **指标冷却**：当前 J 值为 **{j_val:.2f}**，{'已回落到低位安全区（J < ' + str(params.get('j_threshold', 30)) + '）' if j_val < params.get('j_threshold', 30) else 'J值依然偏高，短期仍有震荡可能'}。
+""")
+    else:
+        report.append(f"""
+1. **多头结构**：当前白线为 **{white:.2f}**，黄线为 **{bbi:.2f}**，白线{'在黄线上方运行，趋势处于强多头主升浪中' if white >= bbi else '已死叉黄线，趋势走弱'}。
+2. **黄金坑深度**：当前 J 值为 **{j_val:.2f}**，{'已成功探入黄金坑（J < ' + str(params.get('j_threshold', 30)) + '）' if j_val < params.get('j_threshold', 30) else '尚未探入黄金坑，追高性价比一般'}。
+""")
+        
+    report.append("## 三、 详细卖出与风控逻辑拆解")
+    if "五日线" in strategy_name:
+        exit_ratio = params.get("exit_ma5_ratio", 7.5)
+        stop_loss = params.get("stop_loss", 15.0)
+        report.append(f"""
+目前{stock_name}价格为 **{price:.2f} {currency_unit}**，5日线在 **{ma5:.2f} {currency_unit}** 附近。
+
+1. **持股逻辑**：只要收盘价未有效跌破5日线，主力控盘的短期主升浪趋势就未终结。**切勿因为短期盘中震荡或恐高心理轻易下车，让利润奔跑**。
+2. **风控与离场纪律**：
+   * **第一道减仓防线**：若日后收盘价首次跌破 5 日均线，说明短期牛绳松动，建议无条件减仓 50%。
+   * **第二道生死防线（{exit_ratio}% 规则）**：若收盘价低于 5 日线 **{exit_ratio}%** 以上（即收盘价跌破 **{ma5 * (1 - exit_ratio / 100.0):.2f} {currency_unit}**），说明短期趋势彻底走坏，主力放弃控盘，必须无条件全仓清仓，绝不抗单！
+   * **强止损防线**：以买入价为基准设置 **{stop_loss}%** 强止损，**20%** 最终止损。
+""")
+    else:
+        report.append(f"""
+目前{stock_name}价格为 **{price:.2f} {currency_unit}**，支撑黄线在 **{bbi:.2f} {currency_unit}** 附近。
+
+1. **持股逻辑**：只要价格守在黄线（BBI）上方，中线多头格局就未坏。
+2. **风控与离场纪律**：
+   * **第一道生死防线**：若收盘价有效跌破黄线下方 3%（即跌破 **{bbi * 0.97:.2f} {currency_unit}**），说明中线趋势彻底走坏，护城河失守，必须无条件清仓离场！
+   * **滴滴战法防线**：若出现连续两根阴线且收盘价跌破黄线，说明主力资金撤退迹象明显，必须无条件全仓斩仓离场！
+""")
+        
+    report.append("## 四、 实战执行计划表")
     
     if "五日线" in strategy_name:
-        report.append("### 一、 战法核心逻辑与本质")
-        report.append(
-            "本战法是**“趋势 + 量能 + 情绪 + 风控”**的强势股主升浪交易模型。其核心思想是**“不预测，只跟随”**，通过量价行为识别主力资金的启动，顺应主力资金，拥抱市场分歧。\n\n"
-            "5日均线代表短期市场的平均筹码成本和资金态度。股价站稳5日线是短期强势的基准；连续放量代表主力资金的持续流入；而巨量爆发则是行情正式发动的确认信号。本战法旨在捕捉市场尚存分歧、大众犹豫不决时，主力资金率先发动的主升浪行情。"
-        )
-        
-        report.append("### 二、 详细买入逻辑分析")
-        report.append(
-            f"根据《五日线战法》强逻辑，买入必须满足以下**三步确认法**或**二波启动逻辑**：\n\n"
-            f"1. **看趋势 (基准)**：收盘价必须站上5日均线。当前股价 **{price:.2f}** {'已成功站上' if price > ma5 else '尚未站上'} 5日线 (**{ma5:.2f}**)。站上5日线意味着短期多头完全控盘，资金态度积极。\n"
-            f"2. **看资金 (持续)**：要求连续3个交易日放量。当前成交量表现为：今日 **{int(vol/10000)}万股**，{'呈现连续放量态势' if (vol > prev['volume']) else '未呈现连续放量'}。连续放量是排除单一交易日对倒作假、确认主力持续吸筹的核心依据。\n"
-            f"3. **看确认 (爆发)**：7个交易日内必须出现1至2次巨量（达到20日均量的 **{params.get('vol_mult', 1.45)}倍**，且大于10日最低量的 **{params.get('low_vol_mult', 1.7)}倍**，爆发次日量能不低于首日的 **{int(params.get('next_day_vol_ratio', 0.55)*100)}%**）。这代表主力资金大单扫货，正式发动主升浪。\n"
-            f"4. **二波启动逻辑**：若前期突破后回踩，在5日线附近（偏离度 <= **{params.get('second_wave_dev', 4.5)}%**）再次出现巨量爆发，则是极佳的二波主升浪上车点。"
-        )
-        
-        report.append("### 三、 卖出与风控逻辑分析")
-        report.append(
-            f"趋势交易的精髓在于**“小亏离场，大赚持有”**。本战法制定了极其严苛的防守纪律：\n\n"
-            f"1. **移动止盈/趋势终结**：大牛股通常不会有效跌破5日线。当收盘价低于5日线 **{params.get('exit_ma5_ratio', 7.5)}%** 以上时，说明短期上升趋势彻底终结，必须无条件离场。\n"
-            f"2. **分批减仓**：一旦收盘价首次跌破5日线，说明短期牛绳松动，应主动减仓50%锁定利润。\n"
-            f"3. **强止损线**：以买入价为基准，设置 **{params.get('stop_loss', 15.0)}%** 的强止损线，若跌破则无条件清仓，绝不抱任何幻想，防止单次系统性风险摧毁账户。"
-        )
-        
-        report.append("### 四、 当前个股诊断与实战推演")
-        sig = res["current_signal"]
-        report.append(f"**当前战法状态**：**{sig}**\n")
-        
-        if "买入" in sig or "二波" in sig:
-            report.append(
-                f"**实战推演**：当前《{stock_name}》量价结构高度契合五日线主升浪模型。股价站稳5日线，且量能出现明显的阶梯式放大，主力资金发动的信号极其明确。此时属于**右侧交易的黄金共振点**。建议立即执行买入计划，仓位控制在30%左右，以5日线下方 {params.get('exit_ma5_ratio', 7.5)}% 作为生死防线。"
-            )
-        elif "持有" in sig:
-            dist = (price - ma5) / ma5 * 100
-            report.append(
-                f"**实战推演**：个股目前处于**主升浪持股待涨阶段**。股价沿着5日均线稳步攀升，当前偏离5日线 **{dist:.1f}%**。虽然今日未触发新的买入信号，但由于下方5日线支撑强劲，且未出现跌破卖出线的迹迹，**最佳策略是“让利润奔跑”，切勿因恐高而轻易下车**。密切关注收盘价与5日线距离，一旦收盘跌破5日线，再执行减仓动作。"
-            )
-        else:
-            report.append(
-                f"**实战推演**：当前个股量价表现**不符合**五日线强主升浪特征。{'股价已跌破5日均线，短期趋势走弱' if price <= ma5 else '虽然股价在5日线上方，但量能配合不足，属于无量诱多结构'}。此时贸然介入极易被套，建议保持观望，将资金留给其他符合主升浪共振的龙头标的。"
-            )
-            
+        buy_p = price
+        add_p = df["high"].tail(15).max()
+        stop_p = ma5 * (1 - params.get("exit_ma5_ratio", 7.5) / 100.0)
+        target_p = price * 1.382
     else:
-        report.append("### 一、 战法核心逻辑与本质")
-        if "少妇" in strategy_name:
-            report.append(
-                "**少妇战法 (BBI + KDJ大负值)** 是一种典型的**“大势向上，小势回调”**的强逻辑低吸模型。\n\n"
-                "其本质是利用中线生命线（BBI/黄线）确认主力资金中期控盘方向向上，在股价短期顺势回调、散户恐慌盘涌出导致 KDJ 的 J 值跌入大负值（超卖极限）时，进行逆向思维的左侧安全低吸。这是一种兼具高胜率和极高盈亏比的战法。"
-            )
-        elif "TePu" in strategy_name:
-            report.append(
-                "**TePu战法 (放量突破 + 缩量低吸)** 是一种经典的**“千金难买牛回头”**中继交易模型。\n\n"
-                "其本质是主力资金通过放量长阳突破关键阻力位，向市场宣告控盘态度。随后，主力主动进行缩量洗盘，洗出不坚定的跟风盘。当成交量极度萎缩（代表抛压衰竭）、且 J 值回落到低位时，即为资金共振的第二买点。"
-            )
-        else:
-            report.append(
-                "**补票战法 (趋势黄金坑)** 是一种针对**强趋势主升浪个股的“半路补票”**交易模型。\n\n"
-                "其本质是当个股处于白线在黄线上方的强多头主升浪中，由于短期市场波动或大盘拖累，股价出现短暂的“黄金坑”式下探，导致 J 值快速回落到 30 以下。此时趋势并未走坏，而是为主升浪中途踏空的资金提供了一个安全、快速的补票上车机会。"
-            )
-            
-        report.append("### 二、 详细买入逻辑分析")
-        if "少妇" in strategy_name:
-            report.append(
-                f"买入必须严格满足以下三个共振条件：\n\n"
-                f"1. **趋势确认**：BBI（黄线）必须单调上升。当前 BBI 为 **{bbi:.2f}**，{'处于上升趋势' if bbi > df.iloc[-5]['yellow_line'] else '趋势不明显'}，确保大方向安全。\n"
-                f"2. **情绪极度恐慌**：J 值必须跌破大负值阈值（当前设定为 **{params.get('j_threshold', -5)}**）。当前 J 值为 **{j_val:.2f}**，{'已成功跌入大负值黄金区' if j_val < params.get('j_threshold', -5) else '尚未达到超卖极限'}。\n"
-                f"3. **价格支撑**：股价在黄线（BBI）上方或附近。当前股价 **{price:.2f}** 离黄线 **{bbi:.2f}** 仅 **{abs(price/bbi-1)*100:.1f}%**，支撑有效性高。"
-            )
-        elif "TePu" in strategy_name:
-            report.append(
-                f"买入必须严格满足以下三个共振条件：\n\n"
-                f"1. **前期有突破**：过去 **{params.get('lookback', 15)}** 天内必须有放量突破大阳线（涨幅 >= **{params.get('up_threshold', 3.0)}%** 且成交量 >= 5日均量 1.5 倍）。\n"
-                f"2. **回调极度缩量**：突破后成交量持续萎缩，今日成交量 **{int(vol/10000)}万股**，{'已缩量洗盘到位' if vol < vol_ma5 * params.get('vol_threshold', 0.67) else '缩量尚不明显'}，代表洗盘接近尾声。\n"
-                f"3. **指标冷却**：J 值回落到低位（J < **{params.get('j_threshold', 30)}**）。当前 J 值为 **{j_val:.2f}**。"
-            )
-        else:
-            report.append(
-                f"买入必须严格满足以下两个共振条件：\n\n"
-                f"1. **趋势多头**：白线（**{white:.2f}**）必须在黄线（**{bbi:.2f}**）上方，且股价在黄线之上，证明中线多头格局稳固。\n"
-                f"2. **黄金坑出现**：最近3天内 J 值曾跌破黄金坑阈值（J < **{params.get('j_threshold', 30)}**）。当前 J 值为 **{j_val:.2f}**。"
-            )
-            
-        report.append("### 三、 卖出与风控逻辑分析")
-        report.append(
-            f"1. **止损防线**：以中线生命线（BBI/黄线）下方 3% 附近作为生死防线。一旦收盘价有效跌破黄线，说明中线趋势走坏，必须坚决执行止损。\n"
-            f"2. **止盈目标**：通常以买入价为基准，向上采用斐波那契/祖冲之投影（1.382倍 和 1.618倍）进行分批止盈，锁定利润。"
-        )
+        buy_p = bbi * 1.01
+        add_p = df["high"].tail(15).max()
+        stop_p = bbi * 0.97
+        target_p = bbi * 1.382
         
-        report.append("### 四、 当前个股诊断与实战推演")
-        sig = res["current_signal"]
-        report.append(f"**当前战法状态**：**{sig}**\n")
-        if "买入" in sig:
-            report.append(
-                f"**实战推演**：当前个股技术指标完美共振，达到了战法的标准买入点。筹码在支撑位附近充分换手，短期下行空间已被锁死，向上反弹一触即发。建议分批建仓，首笔仓位控制在15%左右，严格以黄线下方3%作为止损点。"
-            )
-        elif "持股" in sig:
-            report.append(
-                f"**实战推演**：当前个股处于趋势持股期。虽然今日未触发新的买入点，但中线多头趋势完好，股价守在黄线支撑上方，**最佳策略是继续持股，耐心等待主升浪高度的延伸**。"
-            )
-        else:
-            report.append(
-                f"**实战推演**：个股当前量价及指标状态不符合本战法的介入标准。指标尚未冷却到位或趋势已经破位，此时买入极易承受无谓的调整风险，建议耐心等待指标彻底冷却或趋势重新走好。"
-            )
-            
-    report.append("### 五、 战法执行计划表")
-    report.append(
-        f"| 计划步骤 | 执行价格 | 仓位建议 | 触发条件与纪律说明 |\n"
-        f"| :--- | :--- | :--- | :--- |\n"
-        f"| **1. 试错建仓** | **{price:.2f} {currency_unit}** 附近 | 10% - 15% | 当前价格或回踩支撑位时，分批轻仓试错买入 |\n"
-        f"| **2. 突破加仓** | **{price * 1.05:.2f} {currency_unit}** 突破 | 15% - 20% | 股价放量突破前期高点，牛绳紧绷时加仓确认 |\n"
-        f"| **3. 严格止损** | **{price * 0.93:.2f} {currency_unit}** 跌破 | 0% (全仓清) | 跌破生死防线，必须无条件清仓，绝不抗单 |\n"
-        f"| **4. 分批止盈** | **{price * 1.15:.2f} {currency_unit}** 以上 | 减仓 50% | 达到第一目标位，分批锁定利润，让利润奔跑 |"
-    )
+    report.append(f"""
+| 计划步骤 | 执行价格 | 仓位建议 | 触发条件与纪律说明 |
+| :--- | :--- | :--- | :--- |
+| **1. 试错建仓** | **{buy_p:.2f} {currency_unit}** 附近 | 10% - 15% | 股价贴近核心支撑线，偏离度极低，此处建仓性价比极高 |
+| **2. 突破加仓** | **{add_p:.2f} {currency_unit}** 突破 | 15% - 20% | 股价放量突破前期高点，二波/主升浪确认时加仓 |
+| **3. 严格止损** | **{stop_p:.2f} {currency_unit}** 跌破 | 0% (全仓清) | 跌破生死防线，无条件离场，不抱幻想，走错也要走 |
+| **4. 分批止盈** | **{target_p:.2f} {currency_unit}** 以上 | 减仓 50% | 达到第一目标位（1.382 投影），分批锁定利润 |
+""")
     
     return "\n\n".join(report)
 

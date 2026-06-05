@@ -312,7 +312,6 @@ def is_stock_code(text: str) -> bool:
     cleaned = clean_code(text)
     if not cleaned:
         return False
-    # 允许纯数字、纯字母、点号和横杠 (如 300750, AAPL, BRK.A)
     if re.match(r'^[A-Z0-9.\-]+$', cleaned):
         return True
     return False
@@ -324,19 +323,16 @@ def resolve_stock_name_to_code(name: str) -> Optional[str]:
     if not name:
         return None
     try:
-        # 14 代表全球市场搜索
         url = f"https://searchapi.eastmoney.com/api/suggest/get?input={name}&type=14&count=5"
         resp = requests.get(url, timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             suggestions = data.get("QuotationCodeTable", {}).get("Data", [])
             if suggestions:
-                # 返回最匹配的第一个标的代码
                 return str(suggestions[0].get("Code", ""))
     except Exception:
         pass
         
-    # 兜底：扫描 A 股本地列表
     spot = get_stock_spot_table()
     if not spot.empty:
         hit = spot[spot["名称"] == name]
@@ -619,7 +615,6 @@ def get_mainline_history_data(days: int = 30) -> List[Dict[str, Any]]:
     }
 
     if not all_data:
-        # 高仿真兜底
         dates = []
         curr = datetime.now()
         for i in range(days * 2):
@@ -653,7 +648,7 @@ def get_mainline_history_data(days: int = 30) -> List[Dict[str, Any]]:
     unique_dates = sorted(df["date"].unique())[-days:]
     
     history_trail = []
-    for dt in reversed(unique_dates): # 最新日期居左
+    for dt in reversed(unique_dates):
         dt_label = pd.to_datetime(dt).strftime("%m/%d")
         day_data = df[df["date"] == dt].sort_values("pct_chg", ascending=False)
         
@@ -705,6 +700,11 @@ def add_base_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["vol_ma5_prev"] = d["vol_ma5"].shift(1)
     d["body"] = (d["close"] - d["open"]).abs()
     d["upper_shadow"] = d["high"] - d[["open", "close"]].max(axis=1)
+    
+    # 新增：五日线战法所需技术指标
+    d["ma5_actual"] = ma(d["close"], 5)
+    d["vol_ma20"] = ma(d["volume"], 20)
+    d["min_vol_10"] = d["volume"].rolling(10).min()
     
     return d
 
@@ -859,7 +859,7 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
     运行视频专属策略历史回测，生成交易买卖点及各项量化数据
     """
     d = df.copy()
-    signals = [] # 存储历史信号 {'date': ..., 'type': 'buy'/'sell', 'price': ...}
+    signals = []
     position = False
     buy_price = 0.0
     total_profit = 0.0
@@ -882,7 +882,6 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
     j_val = d["j"].values
     ma5_vol = d["vol_ma5"].values
     
-    # 从第30天开始回测，确保指标计算完整
     for i in range(30, len(d)):
         date = dates[i]
         price = closes[i]
@@ -892,15 +891,12 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
             j_thresh = params.get("j_threshold", -5)
             bbi_window = params.get("bbi_window", 10)
             
-            # BBI上升趋势判断: 今天的BBI大于N天前的BBI
             bbi_rising = bbi[i] > bbi[i - bbi_window] if i >= bbi_window else False
-            # J值在超卖大负值
             j_oversold = j_val[i] < j_thresh
-            # 价格在BBI上方或附近
             above_bbi = price >= bbi[i] * 0.98
             
             buy_cond = bbi_rising and j_oversold and above_bbi
-            sell_cond = price < bbi[i] * 0.97 or (i > 0 and closes[i] < closes[i-1] * 0.95) # 止损或破位
+            sell_cond = price < bbi[i] * 0.97 or (i > 0 and closes[i] < closes[i-1] * 0.95)
             
         # 2. TePu战法 (放量突破+缩量低吸)
         elif strategy_name == "TePu战法 (放量突破+缩量低吸)":
@@ -909,7 +905,6 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
             vol_thresh = params.get("vol_threshold", 0.67)
             j_thresh = params.get("j_threshold", 30)
             
-            # 寻找过去lookback天内是否有放量突破大阳线日 T
             has_breakout = False
             t_idx = -1
             if i >= lookback:
@@ -919,7 +914,6 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
                         t_idx = t
                         break
             
-            # 检查此后是否持续缩量
             is_shrinking = False
             if has_breakout and t_idx != -1:
                 is_shrinking = True
@@ -928,7 +922,6 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
                         is_shrinking = False
                         break
             
-            # 今天J值回落
             j_low = j_val[i] < j_thresh
             
             buy_cond = has_breakout and is_shrinking and j_low
@@ -938,9 +931,7 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
         else:
             j_thresh = params.get("j_threshold", 30)
             
-            # 趋势向上 (白线 >= 黄线，且股价在黄线之上)
             trend_up = white[i] >= bbi[i] and price >= bbi[i]
-            # J值在最近3天内曾跌破阈值
             j_drop = any(j_val[k] < j_thresh for k in range(max(0, i-2), i+1))
             
             buy_cond = trend_up and j_drop
@@ -962,7 +953,6 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
                 if profit > 0:
                     win_trades += 1
                     
-    # 如果最后一天仍持仓，按现价计算未平仓收益
     if position:
         profit = (closes[-1] - buy_price) / buy_price
         total_profit += profit
@@ -972,7 +962,6 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
             
     win_rate = (win_trades / trades_count * 100) if trades_count > 0 else 0.0
     
-    # 计算当前诊断 (最后一天)
     last_idx = len(d) - 1
     last_j = j_val[-1]
     last_bbi = bbi[-1]
@@ -1033,7 +1022,7 @@ def run_strategy_backtest(df: pd.DataFrame, strategy_name: str, params: dict) ->
         elif position:
             current_signal = "🔵 持股观望中 (趋势未坏)"
             
-    else: # 补票战法
+    else:
         j_thresh = params.get("j_threshold", 30)
         trend_up = last_white >= last_bbi and last_price >= last_bbi
         j_drop = any(j_val[k] < j_thresh for k in range(max(0, len(d)-3), len(d)))
@@ -1063,7 +1052,6 @@ def chart_strategy_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
     show = df.tail(60).copy()
     fig = go.Figure()
     
-    # 绘制收盘价折线
     fig.add_trace(
         go.Scatter(
             x=show["date"],
@@ -1074,7 +1062,6 @@ def chart_strategy_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
         )
     )
     
-    # 绘制黄线 (BBI)
     fig.add_trace(
         go.Scatter(
             x=show["date"],
@@ -1085,12 +1072,10 @@ def chart_strategy_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
         )
     )
     
-    # 过滤出最近60天的信号
     show_dates = set(show["date"])
     buy_signals = [s for s in signals if s["type"] == "buy" and s["date"] in show_dates]
     sell_signals = [s for s in signals if s["type"] == "sell" and s["date"] in show_dates]
     
-    # 标注买入点
     if buy_signals:
         fig.add_trace(
             go.Scatter(
@@ -1105,7 +1090,215 @@ def chart_strategy_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
             )
         )
         
-    # 标注卖出点
+    if sell_signals:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in sell_signals],
+                y=[s["price"] for s in sell_signals],
+                mode="markers+text",
+                marker=dict(color="#f04438", size=12, symbol="triangle-down"),
+                text=["卖"] * len(sell_signals),
+                textposition="top center",
+                textfont=dict(color="#f04438", size=12, weight="bold"),
+                name="卖出信号"
+            )
+        )
+        
+    fig.update_layout(
+        height=350,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", x=0, y=1.04),
+    )
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(120,140,160,0.15)")
+    return fig
+
+
+# ==============================================================================
+# 13.2. 🔥 新增：五日线强逻辑战法回测与信号绘制引擎
+# ==============================================================================
+def run_fiveday_backtest(df: pd.DataFrame, params: dict) -> Dict[str, Any]:
+    """
+    运行五日线战法历史回测，生成交易买卖点及各项量化数据
+    """
+    d = df.copy()
+    signals = []
+    position = False
+    buy_price = 0.0
+    total_profit = 0.0
+    trades_count = 0
+    win_trades = 0
+    
+    closes = d["close"].values
+    dates = d["date"].values
+    volumes = d["volume"].values
+    pct_chgs = d["pct_chg"].values
+    
+    ma5 = d["ma5_actual"].values
+    vol_ma20 = d["vol_ma20"].values
+    min_vol_10 = d["min_vol_10"].values
+    
+    vol_mult = params.get("vol_mult", 1.45)
+    low_vol_mult = params.get("low_vol_mult", 1.7)
+    next_day_vol_ratio = params.get("next_day_vol_ratio", 0.55)
+    exit_ma5_ratio = params.get("exit_ma5_ratio", 7.5)
+    stop_loss_pct = params.get("stop_loss", 15.0)
+    second_wave_dev = params.get("second_wave_dev", 4.5)
+    
+    for i in range(20, len(d)):
+        date = dates[i]
+        price = closes[i]
+        
+        # 规则 1：股价站上 5日均线
+        rule_trend = price > ma5[i]
+        
+        # 规则 2：连续 3 个交易日放量
+        rule_capital = False
+        if i >= 2:
+            rule_capital = (volumes[i] > volumes[i-1]) and (volumes[i-1] > volumes[i-2])
+            
+        # 规则 3：7个交易日内必须出现 1至2次巨量
+        rule_confirm = False
+        for t in range(max(20, i - 6), i + 1):
+            is_huge = volumes[t] >= vol_mult * vol_ma20[t]
+            is_above_min = volumes[t] >= low_vol_mult * min_vol_10[t]
+            next_day_ok = True
+            if t < i:
+                next_day_ok = volumes[t+1] >= next_day_vol_ratio * volumes[t]
+            if is_huge and is_above_min and next_day_ok:
+                rule_confirm = True
+                break
+                
+        # 第一波买入信号
+        buy_cond = rule_trend and rule_capital and rule_confirm
+        
+        # 二波启动买入信号 (再次放出巨量 + 股价回到5日线附近 + 偏离不超过4.5%)
+        is_huge_today = volumes[i] >= vol_mult * vol_ma20[i]
+        near_ma5 = abs(price - ma5[i]) / ma5[i] <= (second_wave_dev / 100.0)
+        second_wave_buy = is_huge_today and near_ma5 and price > ma5[i]
+        
+        # 卖出条件：收盘价低于5日线7.5%以上，或者15%强止损
+        rule_exit_ma5 = price < ma5[i] * (1 - exit_ma5_ratio / 100.0)
+        rule_stop_loss = position and (price < buy_price * (1 - stop_loss_pct / 100.0))
+        
+        sell_cond = rule_exit_ma5 or rule_stop_loss
+        
+        if not position:
+            if buy_cond or second_wave_buy:
+                signals.append({'date': date, 'type': 'buy', 'price': price, 'index': i})
+                position = True
+                buy_price = price
+        else:
+            if sell_cond:
+                signals.append({'date': date, 'type': 'sell', 'price': price, 'index': i})
+                position = False
+                profit = (price - buy_price) / buy_price
+                total_profit += profit
+                trades_count += 1
+                if profit > 0:
+                    win_trades += 1
+                    
+    if position:
+        profit = (closes[-1] - buy_price) / buy_price
+        total_profit += profit
+        trades_count += 1
+        if profit > 0:
+            win_trades += 1
+            
+    win_rate = (win_trades / trades_count * 100) if trades_count > 0 else 0.0
+    
+    # 当前诊断 (最后一天)
+    last_price = closes[-1]
+    last_ma5 = ma5[-1]
+    last_vol = volumes[-1]
+    last_vol_ma20 = vol_ma20[-1]
+    last_min_vol_10 = min_vol_10[-1]
+    
+    cond_trend = last_price > last_ma5
+    cond_capital = (volumes[-1] > volumes[-2]) and (volumes[-2] > volumes[-3]) if len(volumes) >= 3 else False
+    
+    cond_confirm = False
+    for t in range(max(20, len(d) - 7), len(d)):
+        is_huge = volumes[t] >= vol_mult * vol_ma20[t]
+        is_above_min = volumes[t] >= low_vol_mult * min_vol_10[t]
+        next_day_ok = True
+        if t < len(d) - 1:
+            next_day_ok = volumes[t+1] >= next_day_vol_ratio * volumes[t]
+        if is_huge and is_above_min and next_day_ok:
+            cond_confirm = True
+            break
+            
+    cond_second = (last_vol >= vol_mult * last_vol_ma20) and (abs(last_price - last_ma5)/last_ma5 <= (second_wave_dev/100.0)) and (last_price > last_ma5)
+    
+    checklist = [
+        {"name": "看趋势 (基准)：股价站上 5日均线", "pass": cond_trend, "desc": f"当前价: {fmt_price(last_price)} vs 5日线: {fmt_price(last_ma5)}"},
+        {"name": "看资金 (持续)：连续 3 个交易日放量", "pass": cond_capital, "desc": f"今日量: {int(last_vol/10000)}万 ｜ 昨: {int(volumes[-2]/10000) if len(volumes)>=2 else '--'}万 ｜ 前: {int(volumes[-3]/10000) if len(volumes)>=3 else '--'}万"},
+        {"name": f"看确认 (爆发)：7日内出现巨量爆发 (>= 均量{vol_mult}倍 且 >= 10日最低量{low_vol_mult}倍)", "pass": cond_confirm, "desc": f"今日量: {int(last_vol/10000)}万 vs 20日均量: {int(last_vol_ma20/10000)}万"},
+        {"name": f"二波启动信号：再次巨量且偏离5日线 <= {second_wave_dev}%", "pass": cond_second, "desc": f"偏离度: {abs(last_price - last_ma5)/last_ma5*100:.2f}%"}
+    ]
+    
+    current_signal = "🔴 建议观望/卖出"
+    if (cond_trend and cond_capital and cond_confirm) or cond_second:
+        current_signal = "🟢 触发五日线战法买入信号 (主升浪启动)" if not cond_second else "🔥 触发五日线二波主升浪信号"
+    elif position:
+        current_signal = "🔵 持股沿5日线持有中 (未破卖出线)"
+        
+    return {
+        "signals": signals,
+        "total_profit": total_profit * 100,
+        "trades_count": trades_count,
+        "win_rate": win_rate,
+        "checklist": checklist,
+        "current_signal": current_signal
+    }
+
+def chart_fiveday_signals(df: pd.DataFrame, signals: List[dict]) -> go.Figure:
+    """
+    绘制五日线战法历史信号标注图 (红买绿卖)
+    """
+    show = df.tail(60).copy()
+    fig = go.Figure()
+    
+    fig.add_trace(
+        go.Scatter(
+            x=show["date"],
+            y=show["close"],
+            mode="lines",
+            line=dict(color="#2e6cf6", width=2),
+            name="收盘价"
+        )
+    )
+    
+    fig.add_trace(
+        go.Scatter(
+            x=show["date"],
+            y=show["ma5_actual"],
+            mode="lines",
+            line=dict(color="#f79009", width=1.5, dash="dash"),
+            name="5日均线"
+        )
+    )
+    
+    show_dates = set(show["date"])
+    buy_signals = [s for s in signals if s["type"] == "buy" and s["date"] in show_dates]
+    sell_signals = [s for s in signals if s["type"] == "sell" and s["date"] in show_dates]
+    
+    if buy_signals:
+        fig.add_trace(
+            go.Scatter(
+                x=[s["date"] for s in buy_signals],
+                y=[s["price"] for s in buy_signals],
+                mode="markers+text",
+                marker=dict(color="#12b76a", size=12, symbol="triangle-up"),
+                text=["买"] * len(buy_signals),
+                textposition="bottom center",
+                textfont=dict(color="#12b76a", size=12, weight="bold"),
+                name="买入信号"
+            )
+        )
+        
     if sell_signals:
         fig.add_trace(
             go.Scatter(
@@ -1181,7 +1374,7 @@ if page == "1. 市场状态页":
             st.markdown("**一句话结论**")
             st.caption(f"当前上证指数涨跌 **{fmt_pct(sh_last['pct_chg'])}**，创业板指涨跌 **{fmt_pct(cyb_last['pct_chg'])}**。大盘站稳 20 日线，白线在黄线上方运行，牛绳未断，属于安全可操作区间。")
 
-    # C. 主线方向 (集成 7 天主力方向历史数据，纵向堆叠 Top 5，排版极其紧凑，完美渲染)
+    # C. 主线方向
     st.markdown("#### C. 主线方向")
     with st.container(border=True):
         d1, d2, d3 = st.columns(3)
@@ -1195,7 +1388,6 @@ if page == "1. 市场状态页":
             st.markdown("⚠️ **警惕退潮方向**")
             st.markdown("<span class='z-badge badge-orange'>高位纯情绪票</span>", unsafe_allow_html=True)
             
-        # 🗓️ 紧凑嵌入 7日主力方向历史轨迹 (每日堆叠 5 个行业)
         history_data = get_mainline_history_data(30)
         history_data_7d = history_data[:7]
         
@@ -1208,13 +1400,12 @@ if page == "1. 市场状态页":
                 abbr = sector["abbr"]
                 pct = sector["pct_chg"]
                 
-                # 涨跌幅颜色渐变：红涨绿跌
                 if pct >= 2.0:
-                    bg_color = "#f04438" # 强红
+                    bg_color = "#f04438"
                 elif pct >= 0.0:
-                    bg_color = "#f97066" # 中红
+                    bg_color = "#f97066"
                 else:
-                    bg_color = "#12b76a" # 绿
+                    bg_color = "#12b76a"
                 
                 badges_html += f'<div class="history-badge" style="background-color: {bg_color}; margin-bottom: 2px;" title="{sector["name"]}: {pct:+.2f}%">{abbr}</div>'
                 
@@ -1232,7 +1423,6 @@ if page == "1. 市场状态页":
         )
         st.markdown(history_html, unsafe_allow_html=True)
 
-        # 📊 30日主力方向历史观察表 (每日 Top 5，带涨跌幅)
         table_rows = []
         for item in history_data:
             dt_label = item["date_label"]
@@ -1306,7 +1496,6 @@ if page == "1. 市场状态页":
 elif page == "2. 个股分析页":
     st.markdown("### 2. 个股分析页")
     
-    # Z哥“知行趋势双线”百科卡片 (适配深色模式)
     with st.expander("📖 零基础秒懂：Z哥“知行趋势双线”与常用软件设置方法（点击展开）", expanded=False):
         st.markdown(
             """
@@ -1317,12 +1506,10 @@ elif page == "2. 个股分析页":
                     <li>
                         <span style="color:#2e6cf6; font-weight:800;">🔵 白线（主力控盘线 / 牛绳）</span>：
                         公式为 <code>EMA(EMA(收盘价, 10), 10)</code>。它代表主力资金拉升的“缰绳”。
-                        <br>💡 <em>大白话</em>：白线向上且股价在其上方，说明主力正在猛烈拉升，牛绳紧绷，属于<strong>主升浪</strong>。一旦价格跌破白线，说明拉升动能衰竭，牛绳松了，触发第一道防线（<strong>利润飞一半，减仓</strong>）。
                     </li>
                     <li>
                         <span style="color:#f79009; font-weight:800;">🟡 黄线（中期生命线 / 护城河）</span>：
                         公式为 4 参数多空指标变体 <code>(MA(3)+MA(6)+MA(12)+MA(24))/4</code>。它代表中线趋势的生死防线。
-                        <br>💡 <em>大白话</em>：只要价格守在黄线之上，中线多头趋势就未坏，允许反复低吸。一旦收盘价有效跌破黄线，说明护城河失守，主力彻底放弃抵抗，必须无条件清仓离场（<strong>走错也要走，不留幻想</strong>）。
                     </li>
                 </ul>
                 <hr style="border-top:1px dashed var(--border); margin:15px 0;">
@@ -1341,7 +1528,6 @@ elif page == "2. 个股分析页":
             unsafe_allow_html=True
         )
     
-    # 极速卡片式输入框
     with st.container(border=True):
         c_in1, c_in2, c_in3 = st.columns([1.5, 3, 1])
         with c_in1:
@@ -1352,7 +1538,6 @@ elif page == "2. 个股分析页":
             diag_btn = st.button("开始深度诊断", type="primary", use_container_width=True)
             
     if stock_code_input:
-        # 智能判定并解析中文名称
         if is_stock_code(stock_code_input):
             code = clean_code(stock_code_input)
         else:
@@ -1388,15 +1573,18 @@ elif page == "2. 个股分析页":
             exit_res = detect_exit_signals(df)
             
             # ==================================================================
-            # 🚀 新增：选项卡切换（经典双线诊断 vs 视频专属战法）
+            # 🚀 选项卡切换（经典诊断 vs 视频战法 vs 🔥 新增：五日线强逻辑战法）
             # ==================================================================
-            tab_classic, tab_video = st.tabs(["📊 经典双线诊断", "⚡ 视频专属战法 (BV1bUG86)"])
+            tab_classic, tab_video, tab_fiveday = st.tabs([
+                "📊 经典双线诊断", 
+                "⚡ 视频专属战法 (BV1bUG86)", 
+                "🔥 五日线强逻辑战法"
+            ])
             
             # ------------------------------------------------------------------
-            # 选项卡一：经典双线诊断（保留你原本的全部功能）
+            # 选项卡一：经典双线诊断
             # ------------------------------------------------------------------
             with tab_classic:
-                # A. 顶部基本信息 (多维度量化评分)
                 st.markdown("#### A. 顶部基本信息")
                 with st.container(border=True):
                     col_i1, col_i2 = st.columns([1, 2])
@@ -1423,7 +1611,6 @@ elif page == "2. 个股分析页":
                         st.markdown(f"• **交易性价比分**：**{score_ratio}/100** (现价离黄线支撑位仅 **{dist_to_yellow:.1f}%**)")
                         st.markdown(f"• **风险分**：<span style='color:#f04438; font-weight:800;'>{score_risk}/100</span> (基于逃顶信号与高位乖离度检测)", unsafe_allow_html=True)
 
-                # B. 一句话结论
                 st.markdown("#### B. 一句话结论")
                 if b2_res["signal"] or b3_res["signal"]:
                     conclusion = "可重点观察"
@@ -1446,7 +1633,6 @@ elif page == "2. 个股分析页":
                     st.markdown(f"**核心判定**：<span class='z-badge {conclusion_style}' style='font-size:1.3rem;'>{conclusion}</span>", unsafe_allow_html=True)
                     st.markdown(f"**数据假设与推演**：{conclusion_desc}")
 
-                # C. 个股定位
                 st.markdown("#### C. 个股定位")
                 if real_pct >= 9.8:
                     position = "龙头"
@@ -1468,7 +1654,6 @@ elif page == "2. 个股分析页":
                     st.markdown(f"**个股属性定位**：<span class='z-badge badge-blue' style='font-size:1.2rem;'>{position}</span>", unsafe_allow_html=True)
                     st.markdown(f"**打法建议**：{pos_desc}")
 
-                # D. 结构分析
                 st.markdown("#### D. 结构分析")
                 trend_ok = last["white_line"] >= last["yellow_line"]
                 vol_ok = last["volume"] <= last["vol_ma5_prev"] * 1.1 if real_pct < 0 else last["volume"] >= last["vol_ma5_prev"] * 0.9
@@ -1504,10 +1689,8 @@ elif page == "2. 个股分析页":
                         st.markdown(f"• **上方标准压力**：{'临近前高阻力区' if near_resistance else '上方筹码分布健康，无明显压力'}")
                         st.markdown(f"• **明显瑕疵检测**：<span style='color:#f04438; font-weight:800;'>{exit_res['desc']}</span>", unsafe_allow_html=True)
 
-                # K线与知行趋势双线图表
                 st.plotly_chart(chart_stock(df), use_container_width=True)
 
-                # E. 专属交易计划单 (自适应货币单位)
                 st.markdown("#### E. 专属交易计划单 (机构级实战执行方案)")
                 yellow_price = last["yellow_line"]
                 white_price = last["white_line"]
@@ -1530,7 +1713,6 @@ elif page == "2. 个股分析页":
                         st.metric("坚决止损出局", f"{fmt_price(stop_loss_price)} {currency_unit}", delta="-3.00%", delta_color="inverse")
                     
                     st.markdown("---")
-                    
                     st.markdown(f"""
                     **1. 观察期（缩量企稳）**：
                     等待日K线回踩黄线 **{fmt_price(yellow_price)} {currency_unit}** 附近。成交量必须萎缩至 **{int(target_vol_shrink/10000)} 万股** 以下（5日均量的 85%），且 KDJ 的 J 值冷却至 **30 以下**，证明抛压衰竭。
@@ -1553,13 +1735,12 @@ elif page == "2. 个股分析页":
                     """)
 
             # ------------------------------------------------------------------
-            # 选项卡二：视频专属战法（新增的独立功能）
+            # 选项卡二：视频专属战法 (BV1bUG86)
             # ------------------------------------------------------------------
             with tab_video:
                 st.markdown("#### ⚡ 视频专属战法诊断与回测 (BV1bUG86)")
                 st.caption("基于 Z哥 经典视频战法规则，自动计算当前信号、历史买卖点、累计收益率与胜率。")
                 
-                # 战法选择
                 v_strategy = st.selectbox(
                     "选择视频战法规则",
                     [
@@ -1570,7 +1751,6 @@ elif page == "2. 个股分析页":
                     key="video_strategy_selector"
                 )
                 
-                # 动态参数调节 (使用折叠器，保持手机端页面整洁)
                 with st.expander("⚙️ 战法参数微调 (点击展开)", expanded=False):
                     params = {}
                     if v_strategy == "少妇战法 (BBI + KDJ大负值)":
@@ -1581,13 +1761,11 @@ elif page == "2. 个股分析页":
                         params["up_threshold"] = st.slider("突破日最低涨幅 (%)", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
                         params["vol_threshold"] = st.slider("回调期缩量比例 (较突破日)", min_value=0.3, max_value=1.0, value=0.67, step=0.05)
                         params["j_threshold"] = st.slider("今天J值回落买入阈值", min_value=0, max_value=50, value=30, step=5)
-                    else: # 补票战法
+                    else:
                         params["j_threshold"] = st.slider("黄金坑J值超卖阈值", min_value=0, max_value=50, value=30, step=5)
                 
-                # 运行回测与诊断
                 v_res = run_strategy_backtest(df, v_strategy, params)
                 
-                # A. 战法诊断卡片
                 st.markdown("##### A. 当前战法诊断")
                 with st.container(border=True):
                     sig_val = v_res["current_signal"]
@@ -1600,14 +1778,12 @@ elif page == "2. 个股分析页":
                         
                     st.markdown(f"**当前信号**：<span class='z-badge {sig_style}' style='font-size:1.2rem;'>{sig_val}</span>", unsafe_allow_html=True)
                     
-                    # 条件检查清单
                     st.markdown("**条件检查清单**：")
                     for item in v_res["checklist"]:
                         icon = "✅" if item["pass"] else "❌"
                         color = "#12b76a" if item["pass"] else "#70809b"
                         st.markdown(f"<span style='color:{color}; font-weight:bold;'>{icon} {item['name']}</span> <span style='font-size:0.85rem; color:var(--subtext); margin-left:10px;'>({item['desc']})</span>", unsafe_allow_html=True)
                 
-                # B. 历史回测表现
                 st.markdown("##### B. 历史回测表现")
                 with st.container(border=True):
                     col_b1, col_b2, col_b3 = st.columns(3)
@@ -1620,9 +1796,80 @@ elif page == "2. 个股分析页":
                     with col_b3:
                         st.markdown(f"**策略胜率**：<span style='font-size:1.4rem; font-weight:900; color:#2e6cf6;'>{v_res['win_rate']:.1f}%</span>", unsafe_allow_html=True)
                 
-                # C. 信号标注图表
                 st.markdown("##### C. 战法历史信号标注 (红买绿卖)")
                 st.plotly_chart(chart_strategy_signals(df, v_res["signals"]), use_container_width=True)
+
+            # ------------------------------------------------------------------
+            # 🔥 选项卡三：五日线强逻辑战法（独立新功能）
+            # ------------------------------------------------------------------
+            with tab_fiveday:
+                st.markdown("#### 🔥 五日线强逻辑实战战法")
+                st.caption("“趋势+量能+情绪+风控”强势股主升浪交易模型。不预测，只跟随。")
+                
+                with st.expander("📖 5日线战法核心逻辑（点击展开）", expanded=False):
+                    st.markdown("""
+                    <div style="background: var(--secondary-background-color); padding:15px; border-radius:12px; border:1px solid var(--border); line-height:1.6; color: var(--text-color);">
+                        <p><strong>一、 核心选股逻辑（三步确认法）</strong></p>
+                        <ul>
+                            <li><strong>看趋势 (基准)</strong>：股价必须站上5日均线。</li>
+                            <li><strong>看资金 (持续)</strong>：必须连续3个交易日放量。</li>
+                            <li><strong>看确认 (爆发)</strong>：7个交易日内必须出现1至2次巨量（达到前期均量的1.45倍左右，且大于近期最低量的1.7倍，次日量不低于55%）。</li>
+                        </ul>
+                        <p><strong>二、 二次进场逻辑（二波主升浪）</strong></p>
+                        <ul>
+                            <li>再次放出巨量；股价回到5日线附近；价格偏离5日线不超过4.5%。</li>
+                        </ul>
+                        <p><strong>三、 风控机制</strong></p>
+                        <ul>
+                            <li>收盘价低于5日线7.5%以上时必须离场；15%强止损，20%最终止损。</li>
+                        </ul>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                with st.expander("⚙️ 5日线战法参数微调 (点击展开)", expanded=False):
+                    f_params = {
+                        "vol_mult": st.slider("巨量爆发倍数 (较20日均量)", min_value=1.0, max_value=3.0, value=1.45, step=0.05),
+                        "low_vol_mult": st.slider("巨量较10日最低量倍数", min_value=1.0, max_value=3.0, value=1.70, step=0.05),
+                        "next_day_vol_ratio": st.slider("次日量能保持比例", min_value=0.3, max_value=1.0, value=0.55, step=0.05),
+                        "exit_ma5_ratio": st.slider("跌破5日线离场比例 (%)", min_value=1.0, max_value=15.0, value=7.5, step=0.5),
+                        "stop_loss": st.slider("强止损比例 (%)", min_value=5.0, max_value=25.0, value=15.0, step=1.0),
+                        "second_wave_dev": st.slider("二波偏离5日线最大比例 (%)", min_value=1.0, max_value=10.0, value=4.5, step=0.5)
+                    }
+                
+                f_res = run_fiveday_backtest(df, f_params)
+                
+                st.markdown("##### A. 当前战法诊断")
+                with st.container(border=True):
+                    sig_val = f_res["current_signal"]
+                    if "🟢" in sig_val or "🔥" in sig_val:
+                        sig_style = "badge-green"
+                    elif "🔵" in sig_val:
+                        sig_style = "badge-blue"
+                    else:
+                        sig_style = "badge-red"
+                        
+                    st.markdown(f"**当前信号**：<span class='z-badge {sig_style}' style='font-size:1.2rem;'>{sig_val}</span>", unsafe_allow_html=True)
+                    
+                    st.markdown("**条件检查清单**：")
+                    for item in f_res["checklist"]:
+                        icon = "✅" if item["pass"] else "❌"
+                        color = "#12b76a" if item["pass"] else "#70809b"
+                        st.markdown(f"<span style='color:{color}; font-weight:bold;'>{icon} {item['name']}</span> <span style='font-size:0.85rem; color:var(--subtext); margin-left:10px;'>({item['desc']})</span>", unsafe_allow_html=True)
+                        
+                st.markdown("##### B. 历史回测表现")
+                with st.container(border=True):
+                    col_f1, col_f2, col_f3 = st.columns(3)
+                    with col_f1:
+                        profit_val = f_res["total_profit"]
+                        p_color = "color:#12b76a;" if profit_val >= 0 else "color:#f04438;"
+                        st.markdown(f"**累计收益率**：<span style='font-size:1.4rem; font-weight:900; {p_color}'>{profit_val:+.2f}%</span>", unsafe_allow_html=True)
+                    with col_f2:
+                        st.markdown(f"**交易次数**：<span style='font-size:1.4rem; font-weight:900;'>{f_res['trades_count']} 次</span>", unsafe_allow_html=True)
+                    with col_f3:
+                        st.markdown(f"**策略胜率**：<span style='font-size:1.4rem; font-weight:900; color:#2e6cf6;'>{f_res['win_rate']:.1f}%</span>", unsafe_allow_html=True)
+                        
+                st.markdown("##### C. 战法历史信号标注 (红买绿卖)")
+                st.plotly_chart(chart_fiveday_signals(df, f_res["signals"]), use_container_width=True)
 
 
 # ------------------------------------------------------------------------------
@@ -1644,7 +1891,6 @@ elif page == "3. 自选观察池":
         
         rows = []
         for name in raw_names:
-            # 智能判定并解析中文名称
             if is_stock_code(name):
                 code = clean_code(name)
             else:
@@ -1724,7 +1970,7 @@ elif page == "4. 交易计划单":
         c_p1, c_p2 = st.columns(2)
         with c_p1:
             p_name = st.text_input("股票名称/代码", value=f"{current_name} ({current_code})")
-            p_strategy = st.selectbox("计划采用战法", ["B1低位试错", "B2放量突破", "B3趋势中继"])
+            p_strategy = st.selectbox("计划采用战法", ["B1低位试错", "B2放量突破", "B3趋势中继", "五日线战法"])
         with c_p2:
             p_price = st.number_input(f"计划买入价格 ({currency_unit})", value=default_price)
             p_stop = st.number_input(f"参考止损价格 ({currency_unit})", value=default_stop)
@@ -1747,7 +1993,7 @@ elif page == "4. 交易计划单":
                 
                 st.markdown("---")
                 st.markdown(f"""
-                **1. 观察条件**：价格在黄线支撑位附近缩量企稳，J值冷却至 30 以下。
+                **1. 观察条件**：价格在黄线或5日线支撑位附近缩量企稳，J值冷却至 30 以下。
                 
                 **2. 试错仓位**：当价格触及 **{p_price} {currency_unit}** 附近，轻仓 10% 试错入场。
                 
@@ -1774,7 +2020,7 @@ elif page == "5. 交易复盘页":
     
     with st.container(border=True):
         r_name = st.text_input("复盘股票", value=f"{current_name} ({current_code})")
-        r_type = st.selectbox("买入原因", ["B1低吸", "B2突破", "追高 (无战法信号)", "抄底破位股"])
+        r_type = st.selectbox("买入原因", ["B1低吸", "B2突破", "五日线战法", "追高 (无战法信号)", "抄底破位股"])
         r_result = st.radio("交易结果", ["盈利", "亏损"], horizontal=True)
         r_desc = st.text_area("详细记录你的交易过程 and 心理变化", placeholder="例如：看到它涨得急，怕买不到就直接追高进去了，结果冲高回落...")
         
@@ -1783,9 +2029,9 @@ elif page == "5. 交易复盘页":
             with st.container(border=True):
                 if r_type == "追高 (无战法信号)":
                     st.error("🚨 **Z哥痛批**：“追高就是给主力送温暖！J值都上80了你还冲，这不是交易，这是送人头！宁可错过，绝不做错！”")
-                elif r_type == "B1低吸" and r_result == "盈利":
-                    st.success("🎉 **Z哥点赞**：“B1低吸是聪明人的游戏，守住黄线就是守住本金。这笔交易逻辑没毛病，知行合一，赞一个！”")
+                elif r_type in ["B1低吸", "五日线战法"] and r_result == "盈利":
+                    st.success("🎉 **Z哥点赞**：“低吸是聪明人的游戏，守住5日线/黄线就是守住本金。这笔交易逻辑没毛病，知行合一，赞一个！”")
                 elif r_type == "抄底破位股":
-                    st.error("🚨 **Z哥警告**：“白线都在黄线下方运行了，牛绳都断了你还去抄底？这是逆势死扛！走错也要走，交易纪律大于一切！”")
+                    st.error("🚨 **Z哥警告**：“股价都在5日线/黄线下方运行了，牛绳都断了你还去抄底？这是逆势死扛！走错也要走，交易纪律大于一切！”")
                 else:
                     st.info("💡 **Z哥点评**：“利润是市场给的，都是概率的事儿，谁也别吹牛逼。只要严格执行了计划，亏损也是对的交易；不守纪律赚的钱，迟早要加倍还给市场。”")
